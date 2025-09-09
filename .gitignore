@@ -1,0 +1,129 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# OCR Pipeline Specific
+# Output directories and files
+*/output/
+*/outputs/
+intermediate_outputs/
+pipe_output/
+reconstruction_output/
+
+# Generated OCR results
+*_ocr_results.json
+*_ocr_summary.txt
+batch_ocr_results*.json
+batch_ocr_summary*.txt
+*.log
+
+# Reconstruction outputs
+*.pdf
+reconstruction_output/
+
+# Large datasets and test images (keep small samples)
+test_datasets/kaggle_data/
+*/batch_processing/input_images/
+*/batch_processing/kaggle_test_*/
+*/batch_processing/layout_output/
+*/batch_processing/tableformer_output/
+*/batch_processing/pubtabnet_benchmark/data/
+*/batch_processing/pubtabnet_benchmark/results/
+*/batch_processing/pubtabnet_benchmark/PubTabNet/
+
+# Model files and weights (if any)
+*.pth
+*.pt
+*.h5
+*.pkl
+*.joblib
+models/
+checkpoints/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Third-party package lock files (keep pyproject.toml but ignore lock files for large packages)
+uv.lock
+
+# Keep important configuration and documentation
+!README.md
+!*.md
+!pyproject.toml
+!requirements.txt
+!setup.py
+!LICENSE
+!CHANGELOG.md
+!CODE_OF_CONDUCT.md
+!CONTRIBUTING.md
+
+# Keep small sample images for testing
+!*/input/*.png
+!*/input/*.jpg
+!*/input/*.jpeg
+!*/test_data/*.png
+!*/test_data/*.jpg
+!*/test_data/*.jpeg
+
+# Keep essential JSON configs but ignore large result files
+!*/config.json
+!*/settings.json
+!phm_table_coords.json
