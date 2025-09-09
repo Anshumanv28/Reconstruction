@@ -846,7 +846,8 @@ class ImprovedFreshReconstructor:
             for i, element in enumerate(elements_with_text[:3]):  # Show first 3 with text
                 print(f"  Will draw {element['label']}: '{element.get('fresh_text', '')[:30]}...'")
             
-            # Note: Tables are now processed as regular layout elements with OCR text
+            print("Processing table data...")
+            tables = self.process_tableformer_results(tableformer_data)
             
             print("Creating fresh document...")
             # Create a fresh, clean document
@@ -855,26 +856,29 @@ class ImprovedFreshReconstructor:
             
             print("Drawing elements...")
             
-            # Draw all elements (including tables) using OCR text
+            # Draw non-table elements
             drawn_count = 0
             for element in layout_elements:
-                bbox = element['bounding_box']
-                text = element.get('fresh_text', '')  # Use OCR text
-                if text.strip():
-                    # Add some styling based on element type
-                    bg_color = None
-                    if element['label'] in ['Title', 'Section-header']:
-                        bg_color = (240, 240, 240)  # Light background for headers
-                    elif element['label'] == 'Table':
-                        bg_color = (250, 250, 250)  # Light background for tables
-                    
-                    print(f"  Drawing {element['label']}: '{text[:30]}{'...' if len(text) > 30 else ''}'")
-                    self.draw_text_element(draw, bbox, text, bg_color=bg_color)
-                    drawn_count += 1
-                else:
-                    print(f"  Skipping {element['label']} (no text)")
+                if element['label'] != 'Table':
+                    bbox = element['bounding_box']
+                    text = element.get('fresh_text', '')  # Use OCR text
+                    if text.strip():
+                        # Add some styling based on element type
+                        bg_color = None
+                        if element['label'] in ['Title', 'Section-header']:
+                            bg_color = (240, 240, 240)  # Light background for headers
+                        
+                        print(f"  Drawing {element['label']}: '{text[:30]}{'...' if len(text) > 30 else ''}'")
+                        self.draw_text_element(draw, bbox, text, bg_color=bg_color)
+                        drawn_count += 1
+                    else:
+                        print(f"  Skipping {element['label']} (no text)")
             
-            print(f"Drew {drawn_count} elements (including tables with OCR text)")
+            print(f"Drew {drawn_count} non-table elements")
+            
+            # Draw tables
+            for table in tables:
+                self.draw_table(image, draw, table, translate)
             
             # Generate output filename
             suffix = "_translated" if translate else ""
