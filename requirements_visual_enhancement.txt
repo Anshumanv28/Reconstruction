@@ -1,0 +1,23 @@
+# Additional requirements for visual enhancement modules
+# These are in addition to the main requirements.txt
+
+# For layout visual feature extraction
+scikit-learn>=1.0.0
+opencv-python>=4.5.0
+
+# For table grid estimation
+scikit-image>=0.19.0
+
+# For OCR font analysis
+scikit-learn>=1.0.0
+opencv-python>=4.5.0
+
+# Note: These modules also require the existing dependencies from requirements.txt:
+# - torch
+# - transformers
+# - Pillow
+# - numpy
+# - pytesseract
+# - docling-core
+# - reportlab
+# - matplotlib

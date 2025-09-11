@@ -1,0 +1,42 @@
+# OCR Pipeline Requirements
+# ========================
+# This file contains all dependencies for both Docling and Tesseract OCR pipelines
+
+# Core ML/AI Dependencies (from Docling)
+torch>=2.2.2,<3.0.0
+torchvision>=0,<1
+transformers>=4.42.0,<5.0.0
+accelerate>=1.2.1,<2.0.0
+safetensors[torch]>=0.4.3,<1
+huggingface_hub>=0.23,<1
+
+# Image Processing
+Pillow>=10.0.0,<12.0.0
+opencv-python-headless>=4.6.0.66,<5.0.0.0
+numpy>=1.24.4,<3.0.0
+
+# Data Processing
+jsonlines>=3.1.0,<4.0.0
+pydantic>=2.0.0,<3.0.0
+pandas>=1.5.0,<3.0.0
+
+# OCR Dependencies (Tesseract)
+pytesseract>=0.3.10,<1.0.0
+
+# Utilities
+tqdm>=4.64.0,<5.0.0
+rtree>=1.0.0
+
+# Document Processing
+docling-core>=2.19.0,<3.0.0
+
+# Additional utilities for reconstruction
+reportlab>=4.0.0,<5.0.0
+matplotlib>=3.5.0,<4.0.0
+
+# Development dependencies (optional)
+# Uncomment if you need development tools
+# pytest>=8.3.0,<9.0.0
+# black>=24.4.0,<25.0.0
+# isort>=5.10.0,<6.0.0
+# mypy>=1.10.0,<2.0.0

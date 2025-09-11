@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageEnhance
 from typing import Dict, List, Tuple, Optional
+from pathlib import Path
 import re
 
 class ImprovedFreshReconstructor:
@@ -62,6 +63,62 @@ class ImprovedFreshReconstructor:
             tableformer_data = json.load(f)
             
         return layout_data, tableformer_data
+    
+    def load_pipeline_outputs(self, intermediate_dir: str) -> Tuple[Dict, Dict, Dict, str]:
+        """Load outputs from the standardized pipeline intermediate directory."""
+        layout_path = os.path.join(intermediate_dir, "layout_outputs")
+        tableformer_path = os.path.join(intermediate_dir, "tableformer_outputs")
+        ocr_path = os.path.join(intermediate_dir, "ocr_outputs")
+        
+        # Find the most recent layout predictions and tableformer files
+        layout_files = list(Path(layout_path).glob("*_layout_predictions.json"))
+        tableformer_files = list(Path(tableformer_path).glob("*_tableformer_results.json"))
+        ocr_files = list(Path(ocr_path).glob("*_ocr_results.json"))
+        
+        if not layout_files:
+            raise FileNotFoundError(f"No layout predictions files found in {layout_path}")
+        if not tableformer_files:
+            raise FileNotFoundError(f"No tableformer results files found in {tableformer_path}")
+        if not ocr_files:
+            raise FileNotFoundError(f"No OCR results files found in {ocr_path}")
+        
+        # Use the most recent files
+        latest_layout = max(layout_files, key=os.path.getmtime)
+        latest_tableformer = max(tableformer_files, key=os.path.getmtime)
+        latest_ocr = max(ocr_files, key=os.path.getmtime)
+        
+        # Extract base filename to ensure we're using the same image
+        layout_filename = latest_layout.name
+        base_name = layout_filename.replace("_layout_predictions.json", "")
+        
+        # Verify we have matching files for the same image
+        expected_tableformer = Path(tableformer_path) / f"{base_name}_tableformer_results.json"
+        expected_ocr = Path(ocr_path) / f"{base_name}_ocr_results.json"
+        
+        if not expected_tableformer.exists():
+            print(f"Warning: No matching tableformer file for {base_name}, using latest available")
+            latest_tableformer = max(tableformer_files, key=os.path.getmtime)
+        else:
+            latest_tableformer = expected_tableformer
+            
+        if not expected_ocr.exists():
+            print(f"Warning: No matching OCR file for {base_name}, using latest available")
+            latest_ocr = max(ocr_files, key=os.path.getmtime)
+        else:
+            latest_ocr = expected_ocr
+        
+        print(f"Loading layout data from: {latest_layout}")
+        print(f"Loading tableformer data from: {latest_tableformer}")
+        print(f"Loading OCR data from: {latest_ocr}")
+        
+        # Load the data
+        layout_data, tableformer_data = self.load_docling_outputs(str(latest_layout), str(latest_tableformer))
+        
+        # Load OCR data
+        with open(latest_ocr, 'r', encoding='utf-8') as f:
+            ocr_data = json.load(f)
+        
+        return layout_data, tableformer_data, ocr_data, base_name
     
     def detect_overlaps(self, elements: List[Dict]) -> List[Dict]:
         """Detect and resolve overlapping elements."""
@@ -115,28 +172,83 @@ class ImprovedFreshReconstructor:
         # Add padding for better appearance
         return int(max_width + 100), int(max_height + 100)
     
-    def extract_ocr_text_from_layout(self, layout_data: List[Dict]) -> List[Dict]:
-        """Extract text from layout predictions with fresh content generation."""
+    def extract_ocr_text_from_layout(self, layout_data: List[Dict], ocr_data: Dict) -> List[Dict]:
+        """Extract text from layout predictions using actual OCR data."""
         enhanced_elements = []
+        
+        # Extract OCR text blocks for matching
+        ocr_text_blocks = []
+        if 'text_blocks' in ocr_data:
+            for block in ocr_data['text_blocks']:
+                if 'bbox' in block and 'text' in block:
+                    ocr_text_blocks.append({
+                        'bbox': block['bbox'],
+                        'text': block['text'],
+                        'confidence': block.get('confidence', 1.0)
+                    })
         
         for element in layout_data:
             if element.get('confidence', 0) < self.min_confidence:
                 continue
             
-            # Generate fresh content based on element type
             bbox = [element['l'], element['t'], element['r'], element['b']]
-            fresh_text = self._generate_fresh_content(element, bbox)
+            
+            # Find matching OCR text for this layout element
+            ocr_text = self._find_matching_ocr_text(bbox, ocr_text_blocks)
             
             enhanced_element = {
                 'label': element['label'],
                 'bounding_box': bbox,
                 'confidence': element['confidence'],
-                'fresh_text': fresh_text,
-                'translated_text': fresh_text  # No "Translated:" prefix
+                'ocr_text': ocr_text,
+                'fresh_text': ocr_text  # Use OCR text as fresh text
             }
             enhanced_elements.append(enhanced_element)
             
         return enhanced_elements
+    
+    def _find_matching_ocr_text(self, layout_bbox: List[float], ocr_blocks: List[Dict]) -> str:
+        """Find OCR text that matches the layout element bounding box."""
+        x1, y1, x2, y2 = layout_bbox
+        layout_center_x = (x1 + x2) / 2
+        layout_center_y = (y1 + y2) / 2
+        
+        best_match = ""
+        best_overlap = 0
+        
+        for ocr_block in ocr_blocks:
+            ocr_bbox = ocr_block['bbox']
+            ox1, oy1, ox2, oy2 = ocr_bbox
+            
+            # Check if OCR block overlaps with layout element
+            overlap_x = max(0, min(x2, ox2) - max(x1, ox1))
+            overlap_y = max(0, min(y2, oy2) - max(y1, oy1))
+            overlap_area = overlap_x * overlap_y
+            
+            # Calculate layout element area
+            layout_area = (x2 - x1) * (y2 - y1)
+            
+            if layout_area > 0:
+                overlap_ratio = overlap_area / layout_area
+                
+                # If significant overlap, use this OCR text
+                if overlap_ratio > 0.3 and overlap_ratio > best_overlap:
+                    best_overlap = overlap_ratio
+                    best_match = ocr_block['text']
+        
+        # If no good match found, check if OCR center is within layout bbox
+        if not best_match:
+            for ocr_block in ocr_blocks:
+                ocr_bbox = ocr_block['bbox']
+                ox1, oy1, ox2, oy2 = ocr_bbox
+                ocr_center_x = (ox1 + ox2) / 2
+                ocr_center_y = (oy1 + oy2) / 2
+                
+                if (x1 <= ocr_center_x <= x2 and y1 <= ocr_center_y <= y2):
+                    best_match = ocr_block['text']
+                    break
+        
+        return best_match.strip() if best_match else ""
     
     def _generate_fresh_content(self, element: Dict, bbox: List[float]) -> str:
         """Generate fresh, realistic content based on element type and size."""
@@ -399,7 +511,7 @@ class ImprovedFreshReconstructor:
                 self.draw_text_element(draw, cell_bbox, text, bg_color=None)
     
     def save_intermediate_data(self, layout_elements: List[Dict], tables: List[Dict], 
-                             doc_width: int, doc_height: int, translate: bool = False) -> None:
+                             doc_width: int, doc_height: int, base_name: str, translate: bool = False) -> None:
         """Save intermediate data for debugging and tracking."""
         intermediate_dir = "intermediate_outputs"
         os.makedirs(intermediate_dir, exist_ok=True)
@@ -420,7 +532,7 @@ class ImprovedFreshReconstructor:
             "total_elements": len(layout_elements)
         }
         
-        layout_file = f"{intermediate_dir}/processed_layout_elements.json"
+        layout_file = f"{intermediate_dir}/{base_name}_processed_layout_elements.json"
         with open(layout_file, 'w', encoding='utf-8') as f:
             json.dump(layout_output, f, indent=2, ensure_ascii=False)
         print(f"Saved processed layout elements to: {layout_file}")
@@ -435,7 +547,7 @@ class ImprovedFreshReconstructor:
             "total_tables": len(tables)
         }
         
-        tables_file = f"{intermediate_dir}/processed_table_data.json"
+        tables_file = f"{intermediate_dir}/{base_name}_processed_table_data.json"
         with open(tables_file, 'w', encoding='utf-8') as f:
             json.dump(tables_output, f, indent=2, ensure_ascii=False)
         print(f"Saved processed table data to: {tables_file}")
@@ -471,16 +583,16 @@ class ImprovedFreshReconstructor:
             summary["element_counts"]["elements_by_type"][element_type] = \
                 summary["element_counts"]["elements_by_type"].get(element_type, 0) + 1
         
-        summary_file = f"{intermediate_dir}/reconstruction_summary.json"
+        summary_file = f"{intermediate_dir}/{base_name}_reconstruction_summary.json"
         with open(summary_file, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, ensure_ascii=False)
         print(f"Saved reconstruction summary to: {summary_file}")
         
         # Save detailed element breakdown
-        self.save_detailed_breakdown(layout_elements, tables, intermediate_dir)
+        self.save_detailed_breakdown(layout_elements, tables, intermediate_dir, base_name)
 
     def save_detailed_breakdown(self, layout_elements: List[Dict], tables: List[Dict], 
-                              intermediate_dir: str) -> None:
+                              intermediate_dir: str, base_name: str) -> None:
         """Save detailed element-by-element breakdown for analysis."""
         
         # Create detailed layout elements breakdown
@@ -511,7 +623,7 @@ class ImprovedFreshReconstructor:
             }
             detailed_elements.append(detailed_element)
         
-        elements_file = f"{intermediate_dir}/detailed_layout_elements.json"
+        elements_file = f"{intermediate_dir}/{base_name}_detailed_layout_elements.json"
         with open(elements_file, 'w', encoding='utf-8') as f:
             json.dump(detailed_elements, f, indent=2, ensure_ascii=False)
         print(f"Saved detailed layout elements to: {elements_file}")
@@ -569,7 +681,7 @@ class ImprovedFreshReconstructor:
             
             detailed_tables.append(detailed_table)
         
-        tables_file = f"{intermediate_dir}/detailed_table_breakdown.json"
+        tables_file = f"{intermediate_dir}/{base_name}_detailed_table_breakdown.json"
         with open(tables_file, 'w', encoding='utf-8') as f:
             json.dump(detailed_tables, f, indent=2, ensure_ascii=False)
         print(f"Saved detailed table breakdown to: {tables_file}")
@@ -648,37 +760,168 @@ class ImprovedFreshReconstructor:
         print("Saving improved fresh reconstructed document...")
         image.save(output_path, 'PDF', resolution=100.0)
         print(f"Improved fresh document saved as: {output_path}")
+    
+    def reconstruct_from_pipeline(self, intermediate_dir: str = "../intermediate_outputs", 
+                                 output_dir: str = "../pipe_output", 
+                                 translate: bool = False) -> None:
+        """Reconstruct document from pipeline intermediate outputs using OCR data."""
+        print("=== Pipeline Document Reconstruction ===")
+        print(f"Loading from: {intermediate_dir}")
+        print(f"Output to: {output_dir}")
+        
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        
+        try:
+            # Load pipeline outputs
+            layout_data, tableformer_data, ocr_data, base_name = self.load_pipeline_outputs(intermediate_dir)
+            
+            # Save raw input data for reference
+            intermediate_debug_dir = os.path.join(intermediate_dir, "reconstruction_debug")
+            os.makedirs(intermediate_debug_dir, exist_ok=True)
+            
+            raw_inputs = {
+                "layout_predictions": layout_data,
+                "tableformer_results": tableformer_data,
+                "ocr_data": ocr_data,
+                "input_files": {
+                    "intermediate_dir": intermediate_dir,
+                    "output_dir": output_dir,
+                    "base_name": base_name
+                }
+            }
+            
+            raw_inputs_file = os.path.join(intermediate_debug_dir, f"{base_name}_raw_input_data.json")
+            with open(raw_inputs_file, 'w', encoding='utf-8') as f:
+                json.dump(raw_inputs, f, indent=2, ensure_ascii=False)
+            print(f"Saved raw input data to: {raw_inputs_file}")
+            
+            print("Calculating document dimensions...")
+            doc_width, doc_height = self.get_document_dimensions(layout_data, tableformer_data)
+            print(f"Document dimensions: {doc_width} x {doc_height}")
+            
+            print("Processing layout elements with OCR data...")
+            layout_elements = self.extract_ocr_text_from_layout(layout_data, ocr_data)
+            
+            print("Detecting and resolving overlaps...")
+            layout_elements = self.detect_overlaps(layout_elements)
+            print(f"Processing {len(layout_elements)} non-overlapping elements")
+            
+            print("Processing table data...")
+            tables = self.process_tableformer_results(tableformer_data)
+            
+            print("Saving intermediate data...")
+            self.save_intermediate_data(layout_elements, tables, doc_width, doc_height, base_name, translate)
+            
+            print("Creating fresh document...")
+            # Create a fresh, clean document
+            image = Image.new('RGB', (doc_width, doc_height), self.background_color)
+            draw = ImageDraw.Draw(image)
+            
+            print("Drawing elements...")
+            
+            # Draw non-table elements
+            for element in layout_elements:
+                if element['label'] != 'Table':
+                    bbox = element['bounding_box']
+                    text = element.get('fresh_text', '')  # Use OCR text
+                    if text.strip():
+                        # Add some styling based on element type
+                        bg_color = None
+                        if element['label'] in ['Title', 'Section-header']:
+                            bg_color = (240, 240, 240)  # Light background for headers
+                        
+                        self.draw_text_element(draw, bbox, text, bg_color=bg_color)
+            
+            # Draw tables
+            for table in tables:
+                self.draw_table(image, draw, table, translate)
+            
+            # Generate output filename
+            suffix = "_translated" if translate else ""
+            output_filename = f"{base_name}_reconstructed{suffix}.pdf"
+            output_path = os.path.join(output_dir, output_filename)
+            
+            print(f"Saving pipeline reconstructed document...")
+            image.save(output_path, 'PDF', resolution=100.0)
+            print(f"Pipeline reconstructed document saved as: {output_path}")
+            
+            return output_path
+            
+        except Exception as e:
+            print(f"Error during pipeline reconstruction: {e}")
+            raise
 
 
 def main():
-    """Example usage of the improved fresh reconstructor."""
+    """Main function supporting both standalone and pipeline modes."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Improved Fresh Document Reconstruction")
+    parser.add_argument("--mode", choices=["standalone", "pipeline"], default="pipeline",
+                       help="Reconstruction mode: standalone (uses reconstruction_input) or pipeline (uses intermediate_outputs)")
+    parser.add_argument("--intermediate-dir", default="../intermediate_outputs",
+                       help="Intermediate outputs directory (pipeline mode)")
+    parser.add_argument("--output-dir", default="../pipe_output",
+                       help="Output directory (pipeline mode)")
+    parser.add_argument("--translate", action="store_true",
+                       help="Enable translation mode")
+    
+    args = parser.parse_args()
+    
     reconstructor = ImprovedFreshReconstructor()
     
-    # Paths to the actual files
-    layout_path = "reconstruction_input/layout_predictions.json"
-    tableformer_path = "reconstruction_input/tableformer_results.json"
-    image_path = "reconstruction_input/pages/page_1.png"
-    
-    # Create output directory
-    os.makedirs("reconstruction_output", exist_ok=True)
-    
-    # Reconstruct without translation
-    print("=== Creating Improved Fresh Document (no translation) ===")
-    reconstructor.reconstruct_document(
-        layout_path, tableformer_path, image_path,
-        "reconstruction_output/improved_fresh_reconstructed.pdf", 
-        translate=False
-    )
-    
-    # Reconstruct with translation
-    print("\n=== Creating Improved Fresh Document (with translation) ===")
-    reconstructor.reconstruct_document(
-        layout_path, tableformer_path, image_path,
-        "reconstruction_output/improved_fresh_reconstructed_translated.pdf", 
-        translate=True
-    )
-    
-    print("\nImproved fresh document reconstruction complete!")
+    if args.mode == "pipeline":
+        # Pipeline mode - use intermediate outputs with OCR data
+        print("Running in PIPELINE mode")
+        try:
+            # Reconstruct without translation
+            print("\n=== Creating Pipeline Document (no translation) ===")
+            reconstructor.reconstruct_from_pipeline(
+                args.intermediate_dir, args.output_dir, translate=False
+            )
+            
+            # Reconstruct with translation
+            print("\n=== Creating Pipeline Document (with translation) ===")
+            reconstructor.reconstruct_from_pipeline(
+                args.intermediate_dir, args.output_dir, translate=True
+            )
+            
+            print("\nPipeline document reconstruction complete!")
+            
+        except Exception as e:
+            print(f"Pipeline reconstruction failed: {e}")
+            print("Make sure you have run the docling batch pipeline and tesseract OCR first to generate intermediate outputs.")
+            
+    else:
+        # Standalone mode - use reconstruction_input
+        print("Running in STANDALONE mode")
+        
+        # Paths to the actual files
+        layout_path = "reconstruction_input/layout_predictions.json"
+        tableformer_path = "reconstruction_input/tableformer_results.json"
+        image_path = "reconstruction_input/pages/page_1.png"
+        
+        # Create output directory
+        os.makedirs("reconstruction_output", exist_ok=True)
+        
+        # Reconstruct without translation
+        print("=== Creating Improved Fresh Document (no translation) ===")
+        reconstructor.reconstruct_document(
+            layout_path, tableformer_path, image_path,
+            "reconstruction_output/improved_fresh_reconstructed.pdf", 
+            translate=False
+        )
+        
+        # Reconstruct with translation
+        print("\n=== Creating Improved Fresh Document (with translation) ===")
+        reconstructor.reconstruct_document(
+            layout_path, tableformer_path, image_path,
+            "reconstruction_output/improved_fresh_reconstructed_translated.pdf", 
+            translate=True
+        )
+        
+        print("\nImproved fresh document reconstruction complete!")
 
 
 if __name__ == "__main__":

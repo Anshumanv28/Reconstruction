@@ -18,6 +18,20 @@ import re
 import subprocess
 import sys
 
+
+class NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder to handle numpy types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        return super(NumpyEncoder, self).default(obj)
+
 # Add system Python path to find pytesseract
 sys.path.append(r'C:\Users\anshu\AppData\Local\Programs\Python\Python311\Lib\site-packages')
 
@@ -30,6 +44,11 @@ except ImportError:
     pytesseract = None
     print("Warning: pytesseract not available. Install with: pip install pytesseract")
 
+# Import font analyzer
+# Font analyzer disabled for now
+FONT_ANALYZER_AVAILABLE = False
+print("Running basic OCR without font analysis")
+
 class OCRPipeline:
     def __init__(self, tesseract_path: Optional[str] = None):
         """
@@ -39,8 +58,8 @@ class OCRPipeline:
             tesseract_path: Path to tesseract executable (if not in PATH)
         """
         self.tesseract_path = tesseract_path
-        self.input_dir = "input"
-        self.output_dir = "output"
+        self.input_dir = "../pipe_input"
+        self.output_dir = "../intermediate_outputs/ocr_outputs"
         
         # Create directories if they don't exist
         os.makedirs(self.input_dir, exist_ok=True)
@@ -286,12 +305,15 @@ class OCRPipeline:
         
         return result
     
-    def save_ocr_results(self, results: Dict, output_filename: str) -> str:
-        """Save OCR results to JSON file."""
+    def save_ocr_results(self, results: Dict, output_filename: str, image_path: str = None) -> str:
+        """Save OCR results to JSON file with font analysis."""
+        # Enhance OCR data with font analysis if available
+        # Font analysis disabled for now
+        
         output_path = os.path.join(self.output_dir, output_filename)
         
         with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
+            json.dump(results, f, indent=2, ensure_ascii=False, cls=NumpyEncoder)
         
         print(f"OCR results saved to: {output_path}")
         return output_path
@@ -361,7 +383,7 @@ Configuration:
             # Save individual results
             filename = os.path.basename(image_path)
             base_name = os.path.splitext(filename)[0]
-            self.save_ocr_results(result, f"{base_name}_ocr_results.json")
+            self.save_ocr_results(result, f"{base_name}_ocr_results.json", image_path)
             
             # Create and save text summary
             summary = self.create_text_summary(result)

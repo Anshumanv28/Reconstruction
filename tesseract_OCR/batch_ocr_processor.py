@@ -26,8 +26,8 @@ from ocr_pipeline import OCRPipeline
 
 class BatchOCRProcessor:
     def __init__(self, 
-                 input_dir: str = "input",
-                 output_dir: str = "output",
+                 input_dir: str = "../pipe_input",
+                 output_dir: str = "../intermediate_outputs/ocr_outputs",
                  max_workers: int = 4,
                  supported_formats: List[str] = None,
                  log_level: str = "INFO"):
@@ -319,8 +319,8 @@ class BatchOCRProcessor:
 def main():
     """Main function with command line argument parsing."""
     parser = argparse.ArgumentParser(description="Enhanced Batch OCR Processor")
-    parser.add_argument("--input", "-i", default="input", help="Input directory containing images")
-    parser.add_argument("--output", "-o", default="output", help="Output directory for results")
+    parser.add_argument("--input", "-i", default="../pipe_input", help="Input directory containing images")
+    parser.add_argument("--output", "-o", default="../intermediate_outputs/ocr_outputs", help="Output directory for results")
     parser.add_argument("--workers", "-w", type=int, default=4, help="Number of parallel workers")
     parser.add_argument("--sequential", "-s", action="store_true", help="Use sequential processing instead of parallel")
     parser.add_argument("--log-level", "-l", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Logging level")

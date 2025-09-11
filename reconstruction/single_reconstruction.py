@@ -205,11 +205,11 @@ class ImprovedFreshReconstructor:
         return enhanced_elements
     
     def _find_matching_ocr_text(self, layout_bbox: List[float], ocr_blocks: List[Dict]) -> str:
-        """Find and aggregate OCR text that matches the layout element bounding box."""
+        """Find and aggregate OCR text that matches the layout element bounding box with strict layout boundaries."""
         x1, y1, x2, y2 = layout_bbox
         
-        # Add tolerance for coordinate differences between models
-        tolerance = 10  # pixels tolerance for coordinate matching
+        # Conservative tolerance for coordinate differences between models
+        tolerance = 5  # pixels tolerance for coordinate matching
         
         # Find all OCR words that overlap with or are contained within the layout element
         matching_words = []
@@ -222,42 +222,55 @@ class ImprovedFreshReconstructor:
             ocr_center_x = (ox1 + ox2) / 2
             ocr_center_y = (oy1 + oy2) / 2
             
-            # More lenient matching with tolerance
-            # Check if OCR word center is within layout bbox (with tolerance)
+            # STRICT matching: OCR word must be primarily within layout bbox
+            # Strategy 1: OCR word center within layout bbox (with small tolerance)
             if (x1 - tolerance <= ocr_center_x <= x2 + tolerance and 
                 y1 - tolerance <= ocr_center_y <= y2 + tolerance):
                 
-                # Calculate overlap for sorting
+                # Calculate overlap to ensure meaningful overlap
                 overlap_x = max(0, min(x2, ox2) - max(x1, ox1))
                 overlap_y = max(0, min(y2, oy2) - max(y1, oy1))
                 overlap_area = overlap_x * overlap_y
                 
                 # Only include if there's meaningful overlap
                 if overlap_area > 0:
-                    matching_words.append({
-                        'text': ocr_block['text'],
-                        'bbox': ocr_bbox,
-                        'overlap_area': overlap_area,
-                        'center_x': ocr_center_x,
-                        'center_y': ocr_center_y
-                    })
+                    layout_area = (x2 - x1) * (y2 - y1)
+                    ocr_area = (ox2 - ox1) * (oy2 - oy1)
+                    
+                    # Require significant overlap with layout area
+                    layout_overlap_ratio = overlap_area / layout_area
+                    ocr_overlap_ratio = overlap_area / ocr_area
+                    
+                    # Include if OCR word has significant overlap with layout element
+                    if layout_overlap_ratio > 0.1 or ocr_overlap_ratio > 0.5:
+                        matching_words.append({
+                            'text': ocr_block['text'],
+                            'bbox': ocr_bbox,
+                            'overlap_area': overlap_area,
+                            'layout_overlap_ratio': layout_overlap_ratio,
+                            'ocr_overlap_ratio': ocr_overlap_ratio,
+                            'center_x': ocr_center_x,
+                            'center_y': ocr_center_y,
+                            'confidence': ocr_block.get('confidence', 1.0)
+                        })
         
         if not matching_words:
             return ""
         
-        # Sort words by their horizontal position (left to right) and then by vertical position (top to bottom)
-        matching_words.sort(key=lambda w: (w['center_y'], w['center_x']))
+        # Sort words by layout overlap ratio first, then by position
+        matching_words.sort(key=lambda w: (-w['layout_overlap_ratio'], w['center_y'], w['center_x']))
         
-        # Group words into lines based on vertical proximity
+        # Group words into lines based on vertical proximity with conservative tolerance
         lines = []
         current_line = []
         current_y = None
-        line_tolerance = 20  # pixels
+        line_tolerance = 15  # pixels - conservative for line grouping
         
         for word in matching_words:
             if current_y is None or abs(word['center_y'] - current_y) <= line_tolerance:
                 current_line.append(word)
-                current_y = word['center_y']
+                # Update current_y to be the average of the line
+                current_y = sum(w['center_y'] for w in current_line) / len(current_line)
             else:
                 if current_line:
                     lines.append(current_line)
@@ -267,15 +280,31 @@ class ImprovedFreshReconstructor:
         if current_line:
             lines.append(current_line)
         
-        # Combine words in each line, then combine lines
+        # Combine lines into final text with proper spacing
         result_text = []
         for line in lines:
-            # Sort words in line by horizontal position
+            # Sort words within each line by horizontal position
             line.sort(key=lambda w: w['center_x'])
-            line_text = ' '.join([word['text'] for word in line])
-            result_text.append(line_text)
+            
+            # Join words with appropriate spacing
+            line_words = [word['text'] for word in line]
+            
+            # Handle special cases for better text flow
+            line_text = ' '.join(line_words)
+            
+            # Clean up common OCR artifacts
+            line_text = line_text.replace('  ', ' ')  # Remove double spaces
+            line_text = line_text.replace('|', ' ')   # Replace pipe characters with spaces
+            
+            result_text.append(line_text.strip())
         
-        return '\n'.join(result_text).strip()
+        final_text = '\n'.join(result_text).strip()
+        
+        # Debug: Show what text was found for this layout element
+        if len(matching_words) > 0:
+            print(f"    Found {len(matching_words)} OCR words: '{final_text[:50]}{'...' if len(final_text) > 50 else ''}'")
+        
+        return final_text
     
     def _generate_fresh_content(self, element: Dict, bbox: List[float]) -> str:
         """Generate fresh, realistic content based on element type and size."""
@@ -497,6 +526,365 @@ class ImprovedFreshReconstructor:
         
         # Draw text
         draw.text((text_x, text_y), wrapped_text, font=font, fill=self.text_color)
+    
+    def _find_ocr_text_for_table(self, table_bbox: List[float], layout_elements: List[Dict]) -> str:
+        """Find OCR text that matches a table's bounding box."""
+        tx1, ty1, tx2, ty2 = table_bbox
+        
+        for element in layout_elements:
+            if element['label'] == 'Table':
+                bbox = element['bounding_box']
+                ex1, ey1, ex2, ey2 = bbox
+                
+                # Check if this table element matches the table bbox
+                if (abs(tx1 - ex1) < 10 and abs(ty1 - ey1) < 10 and 
+                    abs(tx2 - ex2) < 10 and abs(ty2 - ey2) < 10):
+                    return element.get('fresh_text', '')
+        
+        return ""
+    
+    def draw_table_systematic_approach(self, draw: ImageDraw.Draw, table_data: Dict, 
+                                     ocr_text: str, ocr_data: Dict) -> None:
+        """Draw table using systematic approach: TableFormer structure + intelligent OCR text mapping."""
+        table_bbox = table_data['table_bbox']
+        table_cells = table_data['table_cells']
+        
+        if not table_bbox or not table_cells:
+            return
+        
+        x1, y1, x2, y2 = table_bbox
+        
+        # Draw table background
+        draw.rectangle([x1, y1, x2, y2], fill=self.table_bg_color)
+        
+        # Draw table border
+        draw.rectangle([x1, y1, x2, y2], outline=self.table_border_color, width=2)
+        
+        # Extract OCR text blocks for precise mapping
+        ocr_text_blocks = []
+        if 'full_document_ocr' in ocr_data and 'text_blocks' in ocr_data['full_document_ocr']:
+            for block in ocr_data['full_document_ocr']['text_blocks']:
+                if 'bbox' in block and 'text' in block:
+                    ocr_text_blocks.append({
+                        'bbox': block['bbox'],
+                        'text': block['text'],
+                        'confidence': block.get('confidence', 1.0)
+                    })
+        
+        print(f"    Table has {len(table_cells)} cells, {len(ocr_text_blocks)} OCR blocks available")
+        
+        # Group cells by type for systematic mapping
+        header_cells = []
+        data_cells = []
+        
+        for cell in table_cells:
+            if cell.get('label') == 'ched':  # Column header
+                header_cells.append(cell)
+            elif cell.get('label') == 'fcel':  # Field cell
+                data_cells.append(cell)
+        
+        print(f"    Found {len(header_cells)} header cells, {len(data_cells)} data cells")
+        
+        # Draw header cells with OCR text
+        for cell in header_cells:
+            self._draw_cell_with_ocr_mapping(draw, cell, ocr_text_blocks, is_header=True)
+        
+        # Draw data cells with OCR text
+        for cell in data_cells:
+            self._draw_cell_with_ocr_mapping(draw, cell, ocr_text_blocks, is_header=False)
+    
+    def _draw_cell_with_ocr_mapping(self, draw: ImageDraw.Draw, cell: Dict, 
+                                   ocr_text_blocks: List[Dict], is_header: bool = False) -> None:
+        """Draw a single cell with OCR text mapping based on cell position and type."""
+        cell_bbox = cell['bbox']
+        cx1, cy1, cx2, cy2 = cell_bbox
+        
+        # Determine cell background color
+        if is_header:
+            bg_color = self.header_bg_color
+        else:
+            bg_color = self.table_bg_color
+        
+        # Draw cell background
+        draw.rectangle(cell_bbox, fill=bg_color)
+        
+        # Draw cell border
+        draw.rectangle(cell_bbox, outline=self.table_border_color, width=1)
+        
+        # Find OCR text that overlaps with this cell
+        cell_text = self._find_ocr_text_for_cell(cell_bbox, ocr_text_blocks)
+        
+        if cell_text.strip():
+            # Use smaller font for table cells
+            font_size = 10 if is_header else 9
+            self.draw_text_element(draw, cell_bbox, cell_text, font_size=font_size, bg_color=None)
+            print(f"      Cell {cell.get('row_id', 0)},{cell.get('column_id', 0)} ({cell.get('label', 'unknown')}): '{cell_text[:20]}{'...' if len(cell_text) > 20 else ''}'")
+        else:
+            # Fallback to more meaningful text based on cell type and position
+            row_id = cell.get('row_id', 0)
+            col_id = cell.get('column_id', 0)
+            
+            if is_header:
+                # Header fallbacks based on common table headers
+                header_names = ["Time", "Topic", "Facilitator", "Description", "Status", "Notes"]
+                if col_id < len(header_names):
+                    fallback_text = header_names[col_id]
+                else:
+                    fallback_text = f"Column {col_id + 1}"
+            else:
+                # Data cell fallbacks based on position
+                if row_id == 1:  # First data row
+                    data_examples = ["", "Discussion Item", "Facilitator Name"]
+                    if col_id < len(data_examples):
+                        fallback_text = data_examples[col_id] if data_examples[col_id] else ""
+                    else:
+                        fallback_text = ""
+                else:
+                    # Generic data cell
+                    fallback_text = ""
+            
+            # Only draw if there's meaningful fallback text
+            if fallback_text.strip():
+                font_size = 10 if is_header else 9
+                self.draw_text_element(draw, cell_bbox, fallback_text, font_size=font_size, bg_color=None)
+                print(f"      Cell {row_id},{col_id} ({cell.get('label', 'unknown')}): '{fallback_text}' (fallback)")
+            else:
+                print(f"      Cell {row_id},{col_id} ({cell.get('label', 'unknown')}): (empty - no OCR text found)")
+    
+    def _find_ocr_text_for_cell(self, cell_bbox: List[float], ocr_text_blocks: List[Dict]) -> str:
+        """Find OCR text that best matches a specific cell's bounding box with intelligent word grouping."""
+        cx1, cy1, cx2, cy2 = cell_bbox
+        
+        # More generous tolerance for table cells to capture related words
+        tolerance = 15  # pixels tolerance for cell matching
+        
+        # Find OCR words that overlap with this cell
+        matching_words = []
+        
+        for ocr_block in ocr_text_blocks:
+            ocr_bbox = ocr_block['bbox']
+            ox1, oy1, ox2, oy2 = ocr_bbox
+            
+            # Calculate OCR word center
+            ocr_center_x = (ox1 + ox2) / 2
+            ocr_center_y = (oy1 + oy2) / 2
+            
+            # Calculate overlap
+            overlap_x = max(0, min(cx2, ox2) - max(cx1, ox1))
+            overlap_y = max(0, min(cy2, oy2) - max(cy1, oy1))
+            overlap_area = overlap_x * overlap_y
+            
+            # Multiple strategies for matching words to cells
+            matches = False
+            
+            # Strategy 1: OCR word center within cell bbox (with tolerance)
+            if (cx1 - tolerance <= ocr_center_x <= cx2 + tolerance and 
+                cy1 - tolerance <= ocr_center_y <= cy2 + tolerance):
+                matches = True
+            
+            # Strategy 2: OCR word has significant overlap with cell
+            if not matches and overlap_area > 0:
+                cell_area = (cx2 - cx1) * (cy2 - cy1)
+                ocr_area = (ox2 - ox1) * (oy2 - oy1)
+                
+                cell_overlap_ratio = overlap_area / cell_area
+                ocr_overlap_ratio = overlap_area / ocr_area
+                
+                # Include if significant overlap with either cell or OCR area
+                if cell_overlap_ratio > 0.1 or ocr_overlap_ratio > 0.3:
+                    matches = True
+            
+            # Strategy 3: OCR word is close to cell edges (for edge cases)
+            if not matches:
+                distance_to_cell = min(
+                    abs(ox1 - cx1), abs(ox2 - cx2), abs(oy1 - cy1), abs(oy2 - cy2)
+                )
+                if distance_to_cell <= tolerance:
+                    matches = True
+            
+            if matches:
+                cell_area = (cx2 - cx1) * (cy2 - cy1)
+                ocr_area = (ox2 - ox1) * (oy2 - oy1)
+                cell_overlap_ratio = overlap_area / cell_area if cell_area > 0 else 0
+                ocr_overlap_ratio = overlap_area / ocr_area if ocr_area > 0 else 0
+                
+                matching_words.append({
+                    'text': ocr_block['text'],
+                    'bbox': ocr_bbox,
+                    'cell_overlap_ratio': cell_overlap_ratio,
+                    'ocr_overlap_ratio': ocr_overlap_ratio,
+                    'center_x': ocr_center_x,
+                    'center_y': ocr_center_y,
+                    'confidence': ocr_block.get('confidence', 1.0)
+                })
+        
+        if not matching_words:
+            return ""
+        
+        # Sort by cell overlap ratio first, then by position
+        matching_words.sort(key=lambda w: (-w['cell_overlap_ratio'], w['center_y'], w['center_x']))
+        
+        # Group words by proximity and combine intelligently
+        if len(matching_words) == 1:
+            return matching_words[0]['text']
+        
+        # Group words that are close to each other (more generous for table cells)
+        word_groups = []
+        current_group = [matching_words[0]]
+        
+        for word in matching_words[1:]:
+            # Check if this word is close to the current group
+            last_word = current_group[-1]
+            distance = ((word['center_x'] - last_word['center_x'])**2 + 
+                       (word['center_y'] - last_word['center_y'])**2)**0.5
+            
+            # If close enough (within 50 pixels for table cells), add to current group
+            if distance < 50:
+                current_group.append(word)
+            else:
+                # Start new group
+                word_groups.append(current_group)
+                current_group = [word]
+        
+        # Add the last group
+        word_groups.append(current_group)
+        
+        # Take the best group (highest overlap scores)
+        best_group = max(word_groups, key=lambda group: 
+                        sum(w['cell_overlap_ratio'] for w in group))
+        
+        # Sort words within the group by position
+        best_group.sort(key=lambda w: (w['center_y'], w['center_x']))
+        
+        # Combine words intelligently
+        result_words = []
+        for word in best_group:
+            text = word['text'].strip()
+            if text and text not in result_words:  # Avoid duplicates
+                result_words.append(text)
+        
+        final_text = ' '.join(result_words)
+        
+        # Clean up common OCR artifacts for table cells
+        final_text = final_text.replace('  ', ' ')  # Remove double spaces
+        final_text = final_text.replace('|', ' ')   # Replace pipe characters with spaces
+        
+        return final_text
+    
+    def draw_table_with_ocr_cells(self, draw: ImageDraw.Draw, table_data: Dict, 
+                                 ocr_text: str) -> None:
+        """Draw table with proper cell structure but using OCR text."""
+        table_bbox = table_data['table_bbox']
+        table_cells = table_data['table_cells']
+        
+        if not table_bbox or not table_cells:
+            return
+        
+        x1, y1, x2, y2 = table_bbox
+        
+        # Draw table background
+        draw.rectangle([x1, y1, x2, y2], fill=self.table_bg_color)
+        
+        # Draw table border
+        draw.rectangle([x1, y1, x2, y2], outline=self.table_border_color, width=2)
+        
+        # Split OCR text into words for cell distribution
+        ocr_words = ocr_text.strip().split()
+        word_index = 0
+        
+        # Draw cells and distribute OCR text
+        for cell in table_cells:
+            cell_bbox = cell['bbox']
+            
+            # Determine cell background color
+            row_id = cell.get('row_id', 0)
+            if row_id == 0:  # Header row
+                bg_color = self.header_bg_color
+            else:
+                bg_color = self.table_bg_color
+            
+            # Draw cell background
+            draw.rectangle(cell_bbox, fill=bg_color)
+            
+            # Draw cell border
+            draw.rectangle(cell_bbox, outline=self.table_border_color, width=1)
+            
+            # Assign OCR text to cell
+            if word_index < len(ocr_words):
+                # Take 1-3 words for each cell depending on cell size
+                cell_width = cell_bbox[2] - cell_bbox[0]
+                if cell_width > 200:  # Large cell
+                    words_to_take = min(3, len(ocr_words) - word_index)
+                elif cell_width > 100:  # Medium cell
+                    words_to_take = min(2, len(ocr_words) - word_index)
+                else:  # Small cell
+                    words_to_take = min(1, len(ocr_words) - word_index)
+                
+                cell_text = ' '.join(ocr_words[word_index:word_index + words_to_take])
+                word_index += words_to_take
+                
+                # Draw cell text
+                if cell_text.strip():
+                    self.draw_text_element(draw, cell_bbox, cell_text, bg_color=None)
+    
+    def draw_table_with_ocr_text(self, draw: ImageDraw.Draw, bbox: List[float], 
+                                ocr_text: str) -> None:
+        """Draw table with proper formatting using OCR text."""
+        x1, y1, x2, y2 = bbox
+        
+        # Debug: Show the OCR text being used
+        print(f"    Table OCR text: '{ocr_text[:100]}{'...' if len(ocr_text) > 100 else ''}'")
+        
+        # Draw table background
+        draw.rectangle([x1, y1, x2, y2], fill=self.table_bg_color)
+        
+        # Draw table border
+        draw.rectangle([x1, y1, x2, y2], outline=self.table_border_color, width=2)
+        
+        # Split OCR text into lines and create a simple table structure
+        lines = ocr_text.strip().split('\n')
+        if not lines:
+            return
+        
+        # Calculate cell dimensions
+        table_width = x2 - x1
+        table_height = y2 - y1
+        num_rows = len(lines)
+        
+        # Use smaller font for table content - more intelligent sizing
+        if num_rows > 0:
+            font_size = max(8, min(14, int(table_height / (num_rows * 1.5))))
+        else:
+            font_size = 10
+        
+        print(f"    Table dimensions: {table_width}x{table_height}, {num_rows} rows, font_size: {font_size}")
+        
+        # Draw each line as a table row
+        for i, line in enumerate(lines):
+            if not line.strip():
+                continue
+                
+            # Calculate row position
+            row_y1 = y1 + (i * table_height / num_rows)
+            row_y2 = y1 + ((i + 1) * table_height / num_rows)
+            
+            # Alternate row background colors
+            if i % 2 == 0:
+                row_bg_color = self.table_bg_color
+            else:
+                row_bg_color = (240, 240, 240)  # Slightly darker for alternating rows
+            
+            # Draw row background
+            draw.rectangle([x1, row_y1, x2, row_y2], fill=row_bg_color)
+            
+            # Draw row border
+            draw.rectangle([x1, row_y1, x2, row_y2], outline=self.table_border_color, width=1)
+            
+            # Draw text in the row
+            if line.strip():
+                # Use smaller font for table text
+                self.draw_text_element(draw, [x1, row_y1, x2, row_y2], line.strip(), 
+                                     font_size=font_size, bg_color=None)
     
     def draw_table(self, image: Image.Image, draw: ImageDraw.Draw, 
                    table_data: Dict, translate: bool = False) -> None:
@@ -868,7 +1256,7 @@ class ImprovedFreshReconstructor:
                         if element['label'] in ['Title', 'Section-header']:
                             bg_color = (240, 240, 240)  # Light background for headers
                         
-                        print(f"  Drawing {element['label']}: '{text[:30]}{'...' if len(text) > 30 else ''}'")
+                        print(f"  Drawing {element['label']} at {bbox}: '{text[:30]}{'...' if len(text) > 30 else ''}'")
                         self.draw_text_element(draw, bbox, text, bg_color=bg_color)
                         drawn_count += 1
                     else:
@@ -876,9 +1264,17 @@ class ImprovedFreshReconstructor:
             
             print(f"Drew {drawn_count} non-table elements")
             
-            # Draw tables
+            # Draw tables using systematic approach: TableFormer structure + OCR text mapping
             for table in tables:
-                self.draw_table(image, draw, table, translate)
+                # Find matching OCR text for this table
+                table_bbox = table['table_bbox']
+                matching_ocr_text = self._find_ocr_text_for_table(table_bbox, layout_elements)
+                if matching_ocr_text:
+                    print(f"  Drawing Table with systematic OCR mapping: '{matching_ocr_text[:30]}{'...' if len(matching_ocr_text) > 30 else ''}'")
+                    self.draw_table_systematic_approach(draw, table, matching_ocr_text, ocr_data)
+                else:
+                    print(f"  Drawing Table with default structure")
+                    self.draw_table(image, draw, table, translate)
             
             # Generate output filename
             suffix = "_translated" if translate else ""
