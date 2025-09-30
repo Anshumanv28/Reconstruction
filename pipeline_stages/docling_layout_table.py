@@ -319,35 +319,76 @@ class LayoutTableDetector:
                 
                 print(f"    TABLES Found {len(table_bboxes)} table(s) in layout detection")
                 
-                # Create mock OCR data structure for TableFormer (from batch_pipeline.py)
+                # Load original image for cropping
                 image = Image.open(input_file)
-                page_data = {
-                    "width": image.width,
-                    "height": image.height,
-                    "tokens": [],
-                    "blocks": [],
-                    "cells": [],
-                    "text_lines": [],
-                    "fonts": [],
-                    "links": [],
-                    "rotation": 0.0,
-                    "rectangles": [],
-                    "textPositions": [],
-                    "localized_image_locations": [],
-                    "scanned_elements": [],
-                    "paths": [],
-                    "pageNumber": 1,
-                    "page_image": {},
-                    "lang": ["en"]
-                }
                 
-                # Load image for TableFormer
-                import cv2
-                img_array = cv2.imread(input_file)
-                page_data["image"] = img_array
+                # Process each table region individually with TableFormer (cropped regions only)
+                multi_tf_output = []
                 
-                # Run TableFormer analysis
-                multi_tf_output = self.table_predictor.multi_table_predict(page_data, table_bboxes, True)
+                for table_idx, table_bbox in enumerate(table_bboxes):
+                    print(f"      Processing table {table_idx + 1} with TableFormer...")
+                    
+                    # Add small padding around table region for breathing space
+                    x1, y1, x2, y2 = map(int, table_bbox[:4])
+                    padding = 20  # 20 pixels padding around the table
+                    
+                    # Apply padding with image boundary checks
+                    padded_x1 = max(0, x1 - padding)
+                    padded_y1 = max(0, y1 - padding)
+                    padded_x2 = min(image.width, x2 + padding)
+                    padded_y2 = min(image.height, y2 + padding)
+                    
+                    print(f"        Original bbox: [{x1}, {y1}, {x2}, {y2}]")
+                    print(f"        Padded bbox: [{padded_x1}, {padded_y1}, {padded_x2}, {padded_y2}]")
+                    
+                    # Crop padded table region from original image
+                    table_crop = image.crop((padded_x1, padded_y1, padded_x2, padded_y2))
+                    
+                    # Create mock OCR data structure for cropped table region
+                    crop_width, crop_height = table_crop.size
+                    page_data = {
+                        "width": crop_width,
+                        "height": crop_height,
+                        "tokens": [],
+                        "blocks": [],
+                        "cells": [],
+                        "text_lines": [],
+                        "fonts": [],
+                        "links": [],
+                        "rotation": 0.0,
+                        "rectangles": [],
+                        "textPositions": [],
+                        "localized_image_locations": [],
+                        "scanned_elements": [],
+                        "paths": [],
+                        "pageNumber": 1,
+                        "page_image": {},
+                        "lang": ["en"]
+                    }
+                    
+                    # Load cropped image for TableFormer
+                    import cv2
+                    import numpy as np
+                    crop_array = np.array(table_crop)
+                    crop_array = cv2.cvtColor(crop_array, cv2.COLOR_RGB2BGR)
+                    page_data["image"] = crop_array
+                    
+                    # Create bbox for cropped region (full crop)
+                    crop_bbox = [0, 0, crop_width, crop_height]
+                    
+                    # Run TableFormer analysis on cropped table
+                    tf_output = self.table_predictor.multi_table_predict(page_data, [crop_bbox], True)
+                    
+                    # Adjust coordinates back to original image space
+                    if tf_output:
+                        # Pass both original bbox and padded bbox for coordinate adjustment
+                        padded_bbox = [padded_x1, padded_y1, padded_x2, padded_y2]
+                        adjusted_output = self._adjust_tableformer_coordinates(tf_output[0], table_bbox, padded_bbox)
+                        multi_tf_output.append(adjusted_output)
+                    else:
+                        multi_tf_output.append({})
+                
+                print(f"    SUCCESS TableFormer processed {len(multi_tf_output)} cropped table regions")
                 
                 # Enhanced processing: Extract detailed table structure
                 enhanced_tables = self._extract_detailed_table_structure(multi_tf_output, table_bboxes, image)
@@ -421,9 +462,21 @@ class LayoutTableDetector:
                     table_bbox = predict_details.get("table_bbox", [])
                     
                     if len(table_bbox) >= 4:
-                        # Crop table region from original image
+                        # Add small padding around table region for breathing space
                         x1, y1, x2, y2 = map(int, table_bbox[:4])
-                        table_crop = original_image.crop((x1, y1, x2, y2))
+                        padding = 20  # 20 pixels padding around the table
+                        
+                        # Apply padding with image boundary checks
+                        padded_x1 = max(0, x1 - padding)
+                        padded_y1 = max(0, y1 - padding)
+                        padded_x2 = min(original_image.width, x2 + padding)
+                        padded_y2 = min(original_image.height, y2 + padding)
+                        
+                        print(f"        Original bbox: [{x1}, {y1}, {x2}, {y2}]")
+                        print(f"        Padded bbox: [{padded_x1}, {padded_y1}, {padded_x2}, {padded_y2}]")
+                        
+                        # Crop padded table region from original image
+                        table_crop = original_image.crop((padded_x1, padded_y1, padded_x2, padded_y2))
                         
                         # Prepare cropped table image for Table Transformer
                         encoding = self.feature_extractor(table_crop, return_tensors="pt")
@@ -439,8 +492,9 @@ class LayoutTableDetector:
                         )[0]
                         
                         # Extract detailed structure for this table
+                        padded_bbox = [padded_x1, padded_y1, padded_x2, padded_y2]
                         table_structure = self._extract_table_transformer_structure_for_table(
-                            results, table_crop, table_idx, table_bbox
+                            results, table_crop, table_idx, table_bbox, padded_bbox
                         )
                         all_table_structures.append(table_structure)
                         
@@ -549,7 +603,7 @@ class LayoutTableDetector:
         
         return enhanced_structure
     
-    def _extract_table_transformer_structure_for_table(self, results: Dict, table_crop, table_idx: int, original_bbox: List) -> Dict:
+    def _extract_table_transformer_structure_for_table(self, results: Dict, table_crop, table_idx: int, original_bbox: List, padded_bbox: List = None) -> Dict:
         """Extract detailed table structure from Table Transformer results for a single cropped table"""
         
         # Table Transformer label mapping
@@ -571,14 +625,20 @@ class LayoutTableDetector:
             
             # Convert coordinates back to original image coordinates
             x1, y1, x2, y2 = box.tolist()
-            orig_x1, orig_y1, orig_x2, orig_y2 = original_bbox[:4]
             
-            # Adjust coordinates to original image space
+            # Use padded bbox for coordinate adjustment if available
+            if padded_bbox:
+                pad_x1, pad_y1, pad_x2, pad_y2 = padded_bbox[:4]
+            else:
+                orig_x1, orig_y1, orig_x2, orig_y2 = original_bbox[:4]
+                pad_x1, pad_y1, pad_x2, pad_y2 = orig_x1, orig_y1, orig_x2, orig_y2
+            
+            # Adjust coordinates to original image space using padded bbox
             adjusted_bbox = [
-                x1 + orig_x1,
-                y1 + orig_y1, 
-                x2 + orig_x1,
-                y2 + orig_y1
+                x1 + pad_x1,
+                y1 + pad_y1, 
+                x2 + pad_x1,
+                y2 + pad_y1
             ]
             
             elements_by_type[element_type].append({
@@ -617,6 +677,55 @@ class LayoutTableDetector:
         }
         
         return table_structure
+    
+    def _adjust_tableformer_coordinates(self, tf_output: Dict, original_bbox: List, padded_bbox: List = None) -> Dict:
+        """Adjust TableFormer coordinates from cropped space back to original image space"""
+        
+        # Extract original table bounding box
+        orig_x1, orig_y1, orig_x2, orig_y2 = original_bbox[:4]
+        
+        # If padded_bbox is provided, use it for coordinate adjustment
+        if padded_bbox:
+            pad_x1, pad_y1, pad_x2, pad_y2 = padded_bbox[:4]
+        else:
+            pad_x1, pad_y1, pad_x2, pad_y2 = orig_x1, orig_y1, orig_x2, orig_y2
+        
+        # Adjust table_bbox in predict_details
+        if 'predict_details' in tf_output:
+            predict_details = tf_output['predict_details'].copy()
+            
+            # Adjust table_bbox
+            if 'table_bbox' in predict_details:
+                table_bbox = predict_details['table_bbox']
+                if len(table_bbox) >= 4:
+                    # Convert from crop coordinates to original coordinates using padded bbox
+                    adjusted_table_bbox = [
+                        table_bbox[0] + pad_x1,
+                        table_bbox[1] + pad_y1,
+                        table_bbox[2] + pad_x1,
+                        table_bbox[3] + pad_y1
+                    ]
+                    predict_details['table_bbox'] = adjusted_table_bbox
+            
+            # Adjust prediction_bboxes_page (cell coordinates)
+            if 'prediction_bboxes_page' in predict_details:
+                adjusted_bboxes = []
+                for bbox in predict_details['prediction_bboxes_page']:
+                    if len(bbox) >= 4:
+                        adjusted_bbox = [
+                            bbox[0] + pad_x1,
+                            bbox[1] + pad_y1,
+                            bbox[2] + pad_x1,
+                            bbox[3] + pad_y1
+                        ]
+                        adjusted_bboxes.append(adjusted_bbox)
+                    else:
+                        adjusted_bboxes.append(bbox)
+                predict_details['prediction_bboxes_page'] = adjusted_bboxes
+            
+            tf_output['predict_details'] = predict_details
+        
+        return tf_output
     
     def _combine_table_structures(self, all_table_structures: List[Dict]) -> Dict:
         """Combine structures from all individual tables into a single structure"""
