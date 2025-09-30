@@ -71,16 +71,16 @@ class PipelineOrchestrator:
             detector = LayoutTableDetector()
             result = detector.process_image(input_file, output_prefix, self.intermediate_dir)
             
-            print(f"✅ Stage 1 completed successfully")
-            print(f"   📊 Layout elements: {result.get('layout_count', 0)}")
-            print(f"   📋 Tables detected: {result.get('table_count', 0)}")
-            print(f"   🖼️  Visualization: {result.get('visualization_path', 'N/A')}")
-            print(f"   📄 Coordinates: {result.get('coordinates_path', 'N/A')}")
+            print(f"Stage 1 completed successfully")
+            print(f"   Layout elements: {result.get('layout_count', 0)}")
+            print(f"   Tables detected: {result.get('table_count', 0)}")
+            print(f"   Visualization: {result.get('visualization_path', 'N/A')}")
+            print(f"   Coordinates: {result.get('coordinates_path', 'N/A')}")
             
             return result
             
         except Exception as e:
-            print(f"❌ Stage 1 failed: {e}")
+            print(f"Stage 1 failed: {e}")
             return {"success": False, "error": str(e)}
     
     def run_stage2_ocr_extraction(self, input_file: str, output_prefix: str) -> Dict:
@@ -97,15 +97,15 @@ class PipelineOrchestrator:
             extractor = TesseractOCRExtractor()
             result = extractor.process_image(input_file, output_prefix, self.intermediate_dir)
             
-            print(f"✅ Stage 2 completed successfully")
+            print(f"SUCCESS Stage 2 completed successfully")
             print(f"   📝 Text blocks: {result.get('text_block_count', 0)}")
-            print(f"   🖼️  Visualization: {result.get('visualization_path', 'N/A')}")
-            print(f"   📄 Coordinates: {result.get('coordinates_path', 'N/A')}")
+            print(f"   VIZ  Visualization: {result.get('visualization_path', 'N/A')}")
+            print(f"   FILES Coordinates: {result.get('coordinates_path', 'N/A')}")
             
             return result
             
         except Exception as e:
-            print(f"❌ Stage 2 failed: {e}")
+            print(f"ERROR Stage 2 failed: {e}")
             return {"success": False, "error": str(e)}
     
     def run_stage3_grid_reconstruction(self, input_file: str, output_prefix: str) -> Dict:
@@ -122,16 +122,16 @@ class PipelineOrchestrator:
             reconstructor = GridReconstructor()
             result = reconstructor.process_image(input_file, output_prefix, self.intermediate_dir)
             
-            print(f"✅ Stage 3 completed successfully")
-            print(f"   📊 Tables processed: {result.get('table_count', 0)}")
-            print(f"   📋 Grid cells: {result.get('total_cells', 0)}")
-            print(f"   🖼️  Visualization: {result.get('visualization_path', 'N/A')}")
-            print(f"   📄 Coordinates: {result.get('coordinates_path', 'N/A')}")
+            print(f"SUCCESS Stage 3 completed successfully")
+            print(f"   INFO Tables processed: {result.get('table_count', 0)}")
+            print(f"   TABLES Grid cells: {result.get('total_cells', 0)}")
+            print(f"   VIZ  Visualization: {result.get('visualization_path', 'N/A')}")
+            print(f"   FILES Coordinates: {result.get('coordinates_path', 'N/A')}")
             
             return result
             
         except Exception as e:
-            print(f"❌ Stage 3 failed: {e}")
+            print(f"ERROR Stage 3 failed: {e}")
             return {"success": False, "error": str(e)}
     
     def run_stage4_file_reconstruction(self, input_file: str, output_prefix: str) -> Dict:
@@ -148,15 +148,15 @@ class PipelineOrchestrator:
             reconstructor = FileReconstructor()
             result = reconstructor.process_image(input_file, output_prefix, self.intermediate_dir)
             
-            print(f"✅ Stage 4 completed successfully")
-            print(f"   📄 Output formats: {result.get('output_formats', [])}")
-            print(f"   🖼️  Visualization: {result.get('visualization_path', 'N/A')}")
-            print(f"   📄 Coordinates: {result.get('coordinates_path', 'N/A')}")
+            print(f"SUCCESS Stage 4 completed successfully")
+            print(f"   FILES Output formats: {result.get('output_formats', [])}")
+            print(f"   VIZ  Visualization: {result.get('visualization_path', 'N/A')}")
+            print(f"   FILES Coordinates: {result.get('coordinates_path', 'N/A')}")
             
             return result
             
         except Exception as e:
-            print(f"❌ Stage 4 failed: {e}")
+            print(f"ERROR Stage 4 failed: {e}")
             return {"success": False, "error": str(e)}
     
     def run_single_stage(self, stage: int, input_file: str) -> Dict:
@@ -170,7 +170,7 @@ class PipelineOrchestrator:
         
         output_prefix = input_path.stem
         
-        print(f"🚀 RUNNING STAGE {stage}: {self.stages[stage].upper()}")
+        print(f"RUNNING STAGE {stage}: {self.stages[stage].upper()}")
         print(f"Input file: {input_file}")
         
         start_time = time.time()
@@ -210,7 +210,7 @@ class PipelineOrchestrator:
             results[f"stage_{stage_num}"] = stage_result
             
             if not stage_result.get("success", False):
-                print(f"❌ Pipeline failed at stage {stage_num}")
+                print(f"ERROR Pipeline failed at stage {stage_num}")
                 break
         
         overall_end_time = time.time()
@@ -341,9 +341,9 @@ def main():
     print(f"{'='*80}")
     
     if result.get("success", False):
-        print("✅ Pipeline completed successfully!")
+        print("SUCCESS Pipeline completed successfully!")
     else:
-        print("❌ Pipeline failed!")
+        print("ERROR Pipeline failed!")
         if "error" in result:
             print(f"Error: {result['error']}")
     

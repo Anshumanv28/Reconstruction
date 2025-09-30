@@ -34,6 +34,14 @@ except ImportError:
     TABLE_PREDICTOR_AVAILABLE = False
     print("Warning: TFPredictor not available")
 
+try:
+    from transformers import TableTransformerForObjectDetection, DetrFeatureExtractor
+    import torch
+    TABLE_TRANSFORMER_AVAILABLE = True
+except ImportError:
+    TABLE_TRANSFORMER_AVAILABLE = False
+    print("Warning: TableTransformer not available")
+
 class LayoutTableDetector:
     """Handles layout and table detection using IBM Docling models"""
     
@@ -41,6 +49,8 @@ class LayoutTableDetector:
         self.stage_name = "layout_table_detection"
         self.layout_predictor = None
         self.table_predictor = None
+        self.table_transformer_model = None
+        self.feature_extractor = None
         
         # Initialize predictors if available
         self._initialize_predictors()
@@ -50,36 +60,43 @@ class LayoutTableDetector:
         try:
             if LAYOUT_PREDICTOR_AVAILABLE and TABLE_PREDICTOR_AVAILABLE:
                 # Download models from Hugging Face (same as batch_pipeline.py)
-                print("📥 Downloading models from Hugging Face...")
+                print("DOWNLOADING Downloading models from Hugging Face...")
                 from huggingface_hub import snapshot_download
                 
                 # Download layout model
                 self.layout_artifact_path = snapshot_download(repo_id="ds4sd/docling-layout-old")
-                print("✅ Layout model downloaded")
+                print("SUCCESS Layout model downloaded")
                 
                 # Download tableformer model
                 self.tableformer_artifact_path = snapshot_download(repo_id="ds4sd/docling-models", revision="v2.1.0")
-                print("✅ TableFormer model downloaded")
+                print("SUCCESS TableFormer model downloaded")
                 
                 # Initialize layout predictor
-                print("🔧 Initializing Layout Predictor...")
+                print("INITIALIZING Initializing Layout Predictor...")
                 self.layout_predictor = LayoutPredictor(
                     self.layout_artifact_path, 
                     device="cpu", 
                     num_threads=4
                 )
-                print("✅ Layout predictor initialized")
+                print("SUCCESS Layout predictor initialized")
                 
                 # Initialize table predictor
-                print("🔧 Initializing TableFormer...")
+                print("INITIALIZING Initializing TableFormer...")
                 self.table_predictor = self._init_tableformer()
-                print("✅ Table predictor initialized")
+                print("SUCCESS Table predictor initialized")
+                
+                # Initialize Table Transformer for structure recognition
+                if TABLE_TRANSFORMER_AVAILABLE:
+                    print("INITIALIZING Initializing Table Transformer...")
+                    self.table_transformer_model = TableTransformerForObjectDetection.from_pretrained("microsoft/table-transformer-structure-recognition")
+                    self.feature_extractor = DetrFeatureExtractor()
+                    print("SUCCESS Table Transformer initialized")
                 
             else:
-                print("⚠️  Required modules not available, using fallback")
+                print("WARNING  Required modules not available, using fallback")
                 
         except Exception as e:
-            print(f"⚠️  Error initializing predictors: {e}")
+            print(f"WARNING  Error initializing predictors: {e}")
             print("   Using fallback mode")
     
     def _init_tableformer(self):
@@ -183,7 +200,7 @@ class LayoutTableDetector:
     
     def process_image(self, input_file: str, output_prefix: str, intermediate_dir: Path) -> Dict:
         """Process a single image for layout and table detection"""
-        print(f"🔍 Processing: {input_file}")
+        print(f"PROCESSING Processing: {input_file}")
         
         try:
             # Run layout detection
@@ -192,8 +209,11 @@ class LayoutTableDetector:
             # Run table detection
             table_result = self._run_table_detection(input_file, output_prefix, intermediate_dir)
             
+            # Run Table Transformer structure recognition
+            table_transformer_result = self._run_table_transformer_structure_recognition(input_file, output_prefix, intermediate_dir, table_result)
+            
             # Create visualization
-            visualization_path = self._create_visualization(input_file, output_prefix, intermediate_dir, layout_result, table_result)
+            visualization_path = self._create_visualization(input_file, output_prefix, intermediate_dir, layout_result, table_result, table_transformer_result)
             
             # Create coordinates JSON
             coordinates_path = self._create_coordinates_json(output_prefix, intermediate_dir, layout_result, table_result)
@@ -207,12 +227,12 @@ class LayoutTableDetector:
             }
             
         except Exception as e:
-            print(f"❌ Error in layout/table detection: {e}")
+            print(f"ERROR Error in layout/table detection: {e}")
             return {"success": False, "error": str(e)}
     
     def _run_layout_detection(self, input_file: str, output_prefix: str, intermediate_dir: Path) -> Dict:
         """Run layout detection using IBM Docling Layout Predictor"""
-        print("  📐 Running layout detection...")
+        print("  LAYOUT Running layout detection...")
         
         # Create separate layout output directory inside stage1
         stage1_dir = intermediate_dir / "stage1_layout_table"
@@ -248,7 +268,7 @@ class LayoutTableDetector:
                 with open(output_file, 'w') as f:
                     json.dump(layout_data, f, indent=2)
                 
-                print(f"    ✅ Layout detection completed: {len(layout_elements)} elements")
+                print(f"    SUCCESS Layout detection completed: {len(layout_elements)} elements")
                 return layout_data
                 
             else:
@@ -256,11 +276,11 @@ class LayoutTableDetector:
                 layout_data = {"layout_elements": [], "total_elements": 0}
                 with open(output_file, 'w') as f:
                     json.dump(layout_data, f, indent=2)
-                print(f"    ⚠️  Layout predictor not available, created empty layout data")
+                print(f"    WARNING  Layout predictor not available, created empty layout data")
                 return layout_data
                 
         except Exception as e:
-            print(f"    ❌ Layout detection failed: {e}")
+            print(f"    ERROR Layout detection failed: {e}")
             # Create fallback data
             layout_data = {"layout_elements": [], "total_elements": 0}
             with open(output_file, 'w') as f:
@@ -269,7 +289,7 @@ class LayoutTableDetector:
     
     def _run_table_detection(self, input_file: str, output_prefix: str, intermediate_dir: Path) -> Dict:
         """Run table detection using TableFormer"""
-        print("  📋 Running table detection...")
+        print("  TABLES Running table detection...")
         
         # Create separate tableformer output directory inside stage1
         stage1_dir = intermediate_dir / "stage1_layout_table"
@@ -291,13 +311,13 @@ class LayoutTableDetector:
                         table_bboxes.append(bbox)
                 
                 if not table_bboxes:
-                    print("    ⚠️  No tables found in layout detection")
+                    print("    WARNING  No tables found in layout detection")
                     table_data = {"tables": [], "total_tables": 0}
                     with open(output_file, 'w') as f:
                         json.dump(table_data, f, indent=2)
                     return table_data
                 
-                print(f"    📋 Found {len(table_bboxes)} table(s) in layout detection")
+                print(f"    TABLES Found {len(table_bboxes)} table(s) in layout detection")
                 
                 # Create mock OCR data structure for TableFormer (from batch_pipeline.py)
                 image = Image.open(input_file)
@@ -329,11 +349,18 @@ class LayoutTableDetector:
                 # Run TableFormer analysis
                 multi_tf_output = self.table_predictor.multi_table_predict(page_data, table_bboxes, True)
                 
-                # Save results in the same format as batch_pipeline.py
+                # Enhanced processing: Extract detailed table structure
+                enhanced_tables = self._extract_detailed_table_structure(multi_tf_output, table_bboxes, image)
+                
+                # Save results with enhanced structure
                 enhanced_results = {
                     'tableformer_results': multi_tf_output,
+                    'enhanced_table_structure': enhanced_tables,
                     'processing_metadata': {
                         'total_tables': len(table_bboxes),
+                        'total_cells': sum(len(table.get('cells', [])) for table in enhanced_tables),
+                        'total_rows': sum(len(table.get('rows', [])) for table in enhanced_tables),
+                        'total_columns': sum(len(table.get('columns', [])) for table in enhanced_tables),
                         'processing_timestamp': self._get_timestamp()
                     }
                 }
@@ -341,7 +368,11 @@ class LayoutTableDetector:
                 with open(output_file, 'w') as f:
                     json.dump(enhanced_results, f, indent=2)
                 
-                print(f"    ✅ TableFormer analysis completed: {len(table_bboxes)} tables")
+                print(f"    SUCCESS Enhanced table analysis completed:")
+                print(f"       Tables: {len(table_bboxes)}")
+                print(f"       Total cells: {enhanced_results['processing_metadata']['total_cells']}")
+                print(f"       Total rows: {enhanced_results['processing_metadata']['total_rows']}")
+                print(f"       Total columns: {enhanced_results['processing_metadata']['total_columns']}")
                 return enhanced_results
                 
             else:
@@ -349,32 +380,589 @@ class LayoutTableDetector:
                 table_data = {"tables": [], "total_tables": 0}
                 with open(output_file, 'w') as f:
                     json.dump(table_data, f, indent=2)
-                print(f"    ⚠️  Table predictor not available, created empty table data")
+                print(f"    WARNING  Table predictor not available, created empty table data")
                 return table_data
                 
         except Exception as e:
-            print(f"    ❌ Table detection failed: {e}")
+            print(f"    ERROR Table detection failed: {e}")
             # Create fallback data
             table_data = {"tables": [], "total_tables": 0}
             with open(output_file, 'w') as f:
                 json.dump(table_data, f, indent=2)
             return table_data
     
+    def _run_table_transformer_structure_recognition(self, input_file: str, output_prefix: str, intermediate_dir: Path, table_result: Dict) -> Dict:
+        """Run Table Transformer structure recognition on cropped table regions only"""
+        print("  TABLES Running Table Transformer structure recognition on table regions...")
+        
+        # Create separate table transformer output directory inside stage1
+        stage1_dir = intermediate_dir / "stage1_layout_table"
+        table_transformer_dir = stage1_dir / "table_transformer_outputs"
+        table_transformer_dir.mkdir(parents=True, exist_ok=True)
+        
+        output_file = table_transformer_dir / f"{output_prefix}_table_transformer_results.json"
+        
+        try:
+            if self.table_transformer_model and self.feature_extractor:
+                # Load original image
+                original_image = Image.open(input_file).convert("RGB")
+                
+                # Get table regions from TableFormer results
+                tableformer_results = table_result.get("tableformer_results", [])
+                all_table_structures = []
+                
+                print(f"    PROCESSING Analyzing {len(tableformer_results)} table regions...")
+                
+                for table_idx, tf_result in enumerate(tableformer_results):
+                    print(f"      Processing table {table_idx + 1}...")
+                    
+                    # Extract table bounding box
+                    predict_details = tf_result.get("predict_details", {})
+                    table_bbox = predict_details.get("table_bbox", [])
+                    
+                    if len(table_bbox) >= 4:
+                        # Crop table region from original image
+                        x1, y1, x2, y2 = map(int, table_bbox[:4])
+                        table_crop = original_image.crop((x1, y1, x2, y2))
+                        
+                        # Prepare cropped table image for Table Transformer
+                        encoding = self.feature_extractor(table_crop, return_tensors="pt")
+                        
+                        # Run Table Transformer structure recognition on cropped table
+                        with torch.no_grad():
+                            outputs = self.table_transformer_model(**encoding)
+                        
+                        # Post-process results for cropped table
+                        target_sizes = [table_crop.size[::-1]]
+                        results = self.feature_extractor.post_process_object_detection(
+                            outputs, threshold=0.6, target_sizes=target_sizes
+                        )[0]
+                        
+                        # Extract detailed structure for this table
+                        table_structure = self._extract_table_transformer_structure_for_table(
+                            results, table_crop, table_idx, table_bbox
+                        )
+                        all_table_structures.append(table_structure)
+                        
+                        print(f"        Extracted: {table_structure.get('total_rows', 0)} rows, {table_structure.get('total_columns', 0)} columns")
+                        print(f"        Headers: {table_structure.get('total_column_headers', 0)} column headers, {table_structure.get('total_row_headers', 0)} row headers")
+                        print(f"        Cells: {table_structure.get('total_cells', 0)} spanning cells")
+                
+                # Combine all table structures
+                combined_structure = self._combine_table_structures(all_table_structures)
+                
+                # Save results
+                enhanced_results = {
+                    'table_transformer_results': {
+                        'individual_tables': all_table_structures,
+                        'combined_structure': combined_structure
+                    },
+                    'enhanced_table_structure': combined_structure,
+                    'processing_metadata': {
+                        'total_tables_processed': len(tableformer_results),
+                        'model_config': self.table_transformer_model.config.id2label,
+                        'processing_timestamp': self._get_timestamp()
+                    }
+                }
+                
+                with open(output_file, 'w') as f:
+                    json.dump(enhanced_results, f, indent=2)
+                
+                print(f"    SUCCESS Table Transformer structure recognition completed:")
+                print(f"       Tables processed: {len(tableformer_results)}")
+                print(f"       Total rows: {combined_structure.get('total_rows', 0)}")
+                print(f"       Total columns: {combined_structure.get('total_columns', 0)}")
+                print(f"       Total cells: {combined_structure.get('total_cells', 0)}")
+                return enhanced_results
+                
+            else:
+                # Fallback: create empty data
+                table_data = {"enhanced_table_structure": {}, "processing_metadata": {}}
+                with open(output_file, 'w') as f:
+                    json.dump(table_data, f, indent=2)
+                print(f"    WARNING  Table Transformer not available, created empty data")
+                return table_data
+                
+        except Exception as e:
+            print(f"    ERROR Table Transformer structure recognition failed: {e}")
+            # Create fallback data
+            table_data = {"enhanced_table_structure": {}, "processing_metadata": {}}
+            with open(output_file, 'w') as f:
+                json.dump(table_data, f, indent=2)
+            return table_data
+    
+    def _extract_table_transformer_structure(self, results: Dict, image) -> Dict:
+        """Extract detailed table structure from Table Transformer results"""
+        print("    PROCESSING Extracting Table Transformer structure...")
+        
+        # Table Transformer label mapping
+        id2label = {
+            0: 'table',
+            1: 'table column', 
+            2: 'table row',
+            3: 'table column header',
+            4: 'table projected row header',
+            5: 'table spanning cell'
+        }
+        
+        # Group elements by type
+        elements_by_type = {}
+        for score, label, box in zip(results['scores'], results['labels'], results['boxes']):
+            element_type = id2label.get(label.item(), 'unknown')
+            if element_type not in elements_by_type:
+                elements_by_type[element_type] = []
+            
+            elements_by_type[element_type].append({
+                'score': score.item(),
+                'label': element_type,
+                'bbox': box.tolist()
+            })
+        
+        # Extract table structure
+        tables = elements_by_type.get('table', [])
+        table_columns = elements_by_type.get('table column', [])
+        table_rows = elements_by_type.get('table row', [])
+        column_headers = elements_by_type.get('table column header', [])
+        row_headers = elements_by_type.get('table projected row header', [])
+        spanning_cells = elements_by_type.get('table spanning cell', [])
+        
+        # Create enhanced structure
+        enhanced_structure = {
+            'tables': tables,
+            'table_columns': table_columns,
+            'table_rows': table_rows,
+            'column_headers': column_headers,
+            'row_headers': row_headers,
+            'spanning_cells': spanning_cells,
+            'total_tables': len(tables),
+            'total_columns': len(table_columns),
+            'total_rows': len(table_rows),
+            'total_column_headers': len(column_headers),
+            'total_row_headers': len(row_headers),
+            'total_cells': len(spanning_cells),
+            'element_counts': {k: len(v) for k, v in elements_by_type.items()}
+        }
+        
+        print(f"        Extracted: {len(tables)} tables, {len(table_rows)} rows, {len(table_columns)} columns")
+        print(f"        Headers: {len(column_headers)} column headers, {len(row_headers)} row headers")
+        print(f"        Cells: {len(spanning_cells)} spanning cells")
+        
+        return enhanced_structure
+    
+    def _extract_table_transformer_structure_for_table(self, results: Dict, table_crop, table_idx: int, original_bbox: List) -> Dict:
+        """Extract detailed table structure from Table Transformer results for a single cropped table"""
+        
+        # Table Transformer label mapping
+        id2label = {
+            0: 'table',
+            1: 'table column', 
+            2: 'table row',
+            3: 'table column header',
+            4: 'table projected row header',
+            5: 'table spanning cell'
+        }
+        
+        # Group elements by type
+        elements_by_type = {}
+        for score, label, box in zip(results['scores'], results['labels'], results['boxes']):
+            element_type = id2label.get(label.item(), 'unknown')
+            if element_type not in elements_by_type:
+                elements_by_type[element_type] = []
+            
+            # Convert coordinates back to original image coordinates
+            x1, y1, x2, y2 = box.tolist()
+            orig_x1, orig_y1, orig_x2, orig_y2 = original_bbox[:4]
+            
+            # Adjust coordinates to original image space
+            adjusted_bbox = [
+                x1 + orig_x1,
+                y1 + orig_y1, 
+                x2 + orig_x1,
+                y2 + orig_y1
+            ]
+            
+            elements_by_type[element_type].append({
+                'score': score.item(),
+                'label': element_type,
+                'bbox': adjusted_bbox,
+                'crop_bbox': box.tolist()
+            })
+        
+        # Extract table structure
+        tables = elements_by_type.get('table', [])
+        table_columns = elements_by_type.get('table column', [])
+        table_rows = elements_by_type.get('table row', [])
+        column_headers = elements_by_type.get('table column header', [])
+        row_headers = elements_by_type.get('table projected row header', [])
+        spanning_cells = elements_by_type.get('table spanning cell', [])
+        
+        # Create enhanced structure for this table
+        table_structure = {
+            'table_index': table_idx,
+            'original_bbox': original_bbox,
+            'crop_size': table_crop.size,
+            'tables': tables,
+            'table_columns': table_columns,
+            'table_rows': table_rows,
+            'column_headers': column_headers,
+            'row_headers': row_headers,
+            'spanning_cells': spanning_cells,
+            'total_tables': len(tables),
+            'total_columns': len(table_columns),
+            'total_rows': len(table_rows),
+            'total_column_headers': len(column_headers),
+            'total_row_headers': len(row_headers),
+            'total_cells': len(spanning_cells),
+            'element_counts': {k: len(v) for k, v in elements_by_type.items()}
+        }
+        
+        return table_structure
+    
+    def _combine_table_structures(self, all_table_structures: List[Dict]) -> Dict:
+        """Combine structures from all individual tables into a single structure"""
+        
+        combined_tables = []
+        combined_columns = []
+        combined_rows = []
+        combined_column_headers = []
+        combined_row_headers = []
+        combined_spanning_cells = []
+        
+        for table_structure in all_table_structures:
+            combined_tables.extend(table_structure.get('tables', []))
+            combined_columns.extend(table_structure.get('table_columns', []))
+            combined_rows.extend(table_structure.get('table_rows', []))
+            combined_column_headers.extend(table_structure.get('column_headers', []))
+            combined_row_headers.extend(table_structure.get('row_headers', []))
+            combined_spanning_cells.extend(table_structure.get('spanning_cells', []))
+        
+        # Combine element counts
+        combined_element_counts = {}
+        for table_structure in all_table_structures:
+            element_counts = table_structure.get('element_counts', {})
+            for element_type, count in element_counts.items():
+                combined_element_counts[element_type] = combined_element_counts.get(element_type, 0) + count
+        
+        return {
+            'tables': combined_tables,
+            'table_columns': combined_columns,
+            'table_rows': combined_rows,
+            'column_headers': combined_column_headers,
+            'row_headers': combined_row_headers,
+            'spanning_cells': combined_spanning_cells,
+            'total_tables': len(combined_tables),
+            'total_columns': len(combined_columns),
+            'total_rows': len(combined_rows),
+            'total_column_headers': len(combined_column_headers),
+            'total_row_headers': len(combined_row_headers),
+            'total_cells': len(combined_spanning_cells),
+            'element_counts': combined_element_counts,
+            'individual_tables': all_table_structures
+        }
+    
+    def _extract_detailed_table_structure(self, multi_tf_output: List, table_bboxes: List, image) -> List[Dict]:
+        """Extract detailed table structure including rows, columns, cells, and headers like Table Transformer"""
+        print("    PROCESSING Extracting detailed table structure...")
+        
+        enhanced_tables = []
+        
+        for table_idx, (tf_output, table_bbox) in enumerate(zip(multi_tf_output, table_bboxes)):
+            print(f"      Processing table {table_idx + 1}...")
+            
+            # Extract table structure from TableFormer output
+            table_structure = self._parse_tableformer_output(tf_output, table_bbox, table_idx)
+            enhanced_tables.append(table_structure)
+        
+        return enhanced_tables
+    
+    def _parse_tableformer_output(self, tf_output: Dict, table_bbox: List, table_idx: int) -> Dict:
+        """Parse TableFormer output to extract detailed table structure"""
+        
+        # Initialize table structure
+        table_structure = {
+            "table_id": f"table_{table_idx}",
+            "table_bbox": table_bbox,
+            "rows": [],
+            "columns": [],
+            "cells": [],
+            "headers": {
+                "column_headers": [],
+                "row_headers": []
+            },
+            "grid_structure": {
+                "num_rows": 0,
+                "num_columns": 0,
+                "cell_matrix": []
+            }
+        }
+        
+        try:
+            # Extract cells from TableFormer output
+            cells = []
+            
+            # Check for different possible cell data structures
+            if 'cells' in tf_output:
+                cells = tf_output['cells']
+                print(f"        Found {len(cells)} cells in 'cells' field")
+            elif 'prediction_bboxes_page' in tf_output.get('predict_details', {}):
+                # TableFormer format: extract from prediction_bboxes_page
+                prediction_bboxes = tf_output['predict_details']['prediction_bboxes_page']
+                print(f"        Found {len(prediction_bboxes)} cell bboxes in TableFormer output")
+                
+                # Convert bboxes to cell format
+                for cell_idx, bbox in enumerate(prediction_bboxes):
+                    cell_data = {
+                        'bbox': bbox,
+                        'text': '',  # TableFormer doesn't provide text directly
+                        'row': 0,    # Will be determined by position
+                        'col': 0,    # Will be determined by position
+                        'rowspan': 1,
+                        'colspan': 1,
+                        'is_header': False,
+                        'confidence': 1.0,
+                        'cell_type': 'data_cell'
+                    }
+                    cells.append(cell_data)
+            elif 'tf_responses' in tf_output and tf_output['tf_responses']:
+                # Alternative format
+                tf_responses = tf_output['tf_responses']
+                print(f"        Found {len(tf_responses)} responses in tf_responses")
+                # Process tf_responses if needed
+            else:
+                print(f"        No recognizable cell data found in TableFormer output")
+                print(f"        Available keys: {list(tf_output.keys())}")
+            
+            if cells:
+                # Process each cell
+                processed_cells = []
+                for cell_idx, cell in enumerate(cells):
+                    cell_data = self._process_tableformer_cell(cell, cell_idx)
+                    processed_cells.append(cell_data)
+                
+                # Organize cells into grid structure based on position
+                organized_cells = self._organize_cells_into_grid(processed_cells, table_bbox)
+                table_structure["cells"] = organized_cells
+                
+                # Extract grid structure
+                grid_info = self._extract_grid_structure(organized_cells)
+                table_structure["grid_structure"] = grid_info
+                
+                # Extract rows and columns
+                rows, columns = self._extract_rows_and_columns(organized_cells, grid_info)
+                table_structure["rows"] = rows
+                table_structure["columns"] = columns
+                
+                # Identify headers
+                headers = self._identify_headers(organized_cells, grid_info)
+                table_structure["headers"] = headers
+                
+                print(f"        Extracted: {grid_info['num_rows']} rows, {grid_info['num_columns']} columns")
+                print(f"        Headers: {len(headers['column_headers'])} column headers, {len(headers['row_headers'])} row headers")
+            
+        except Exception as e:
+            print(f"        WARNING  Error parsing TableFormer output: {e}")
+        
+        return table_structure
+    
+    def _organize_cells_into_grid(self, cells: List[Dict], table_bbox: List) -> List[Dict]:
+        """Organize cells into a grid structure based on their positions"""
+        if not cells:
+            return []
+        
+        # Sort cells by y-position (top to bottom), then x-position (left to right)
+        sorted_cells = sorted(cells, key=lambda cell: (cell['bbox'][1], cell['bbox'][0]))
+        
+        # Group cells into rows based on y-position
+        rows = []
+        current_row = []
+        current_y = None
+        y_tolerance = 20  # Pixels tolerance for grouping into same row
+        
+        for cell in sorted_cells:
+            cell_y = cell['bbox'][1]
+            
+            if current_y is None or abs(cell_y - current_y) <= y_tolerance:
+                # Same row
+                current_row.append(cell)
+                current_y = cell_y if current_y is None else min(current_y, cell_y)
+            else:
+                # New row
+                if current_row:
+                    rows.append(current_row)
+                current_row = [cell]
+                current_y = cell_y
+        
+        if current_row:
+            rows.append(current_row)
+        
+        # Assign row and column indices
+        organized_cells = []
+        for row_idx, row_cells in enumerate(rows):
+            # Sort cells in row by x-position
+            row_cells.sort(key=lambda cell: cell['bbox'][0])
+            
+            for col_idx, cell in enumerate(row_cells):
+                cell['row'] = row_idx
+                cell['col'] = col_idx
+                cell['cell_id'] = f"R{row_idx}C{col_idx}"
+                organized_cells.append(cell)
+        
+        return organized_cells
+    
+    def _process_tableformer_cell(self, cell: Dict, cell_idx: int) -> Dict:
+        """Process individual cell from TableFormer output"""
+        cell_data = {
+            "cell_id": f"cell_{cell_idx}",
+            "bbox": cell.get('bbox', [0, 0, 0, 0]),
+            "text": cell.get('text', ''),
+            "row": cell.get('row', 0),
+            "col": cell.get('col', 0),
+            "rowspan": cell.get('rowspan', 1),
+            "colspan": cell.get('colspan', 1),
+            "is_header": cell.get('is_header', False),
+            "confidence": cell.get('confidence', 0.0),
+            "cell_type": self._determine_cell_type(cell)
+        }
+        return cell_data
+    
+    def _determine_cell_type(self, cell: Dict) -> str:
+        """Determine cell type based on TableFormer output"""
+        if cell.get('is_header', False):
+            return "header"
+        elif cell.get('row', 0) == 0:
+            return "column_header"
+        elif cell.get('col', 0) == 0:
+            return "row_header"
+        else:
+            return "data_cell"
+    
+    def _extract_grid_structure(self, cells: List[Dict]) -> Dict:
+        """Extract grid structure from cells"""
+        if not cells:
+            return {"num_rows": 0, "num_columns": 0, "cell_matrix": []}
+        
+        # Find maximum row and column
+        max_row = max(cell.get('row', 0) for cell in cells)
+        max_col = max(cell.get('col', 0) for cell in cells)
+        
+        num_rows = max_row + 1
+        num_columns = max_col + 1
+        
+        # Create cell matrix
+        cell_matrix = [[None for _ in range(num_columns)] for _ in range(num_rows)]
+        
+        for cell in cells:
+            row = cell.get('row', 0)
+            col = cell.get('col', 0)
+            if 0 <= row < num_rows and 0 <= col < num_columns:
+                cell_matrix[row][col] = cell
+        
+        return {
+            "num_rows": num_rows,
+            "num_columns": num_columns,
+            "cell_matrix": cell_matrix
+        }
+    
+    def _extract_rows_and_columns(self, cells: List[Dict], grid_info: Dict) -> Tuple[List[Dict], List[Dict]]:
+        """Extract row and column information"""
+        rows = []
+        columns = []
+        
+        num_rows = grid_info["num_rows"]
+        num_columns = grid_info["num_columns"]
+        
+        # Extract rows
+        for row_idx in range(num_rows):
+            row_cells = [cell for cell in cells if cell.get('row', 0) == row_idx]
+            if row_cells:
+                row_bbox = self._calculate_row_bbox(row_cells)
+                rows.append({
+                    "row_id": f"row_{row_idx}",
+                    "row_index": row_idx,
+                    "bbox": row_bbox,
+                    "cells": row_cells,
+                    "num_cells": len(row_cells)
+                })
+        
+        # Extract columns
+        for col_idx in range(num_columns):
+            col_cells = [cell for cell in cells if cell.get('col', 0) == col_idx]
+            if col_cells:
+                col_bbox = self._calculate_column_bbox(col_cells)
+                columns.append({
+                    "column_id": f"col_{col_idx}",
+                    "column_index": col_idx,
+                    "bbox": col_bbox,
+                    "cells": col_cells,
+                    "num_cells": len(col_cells)
+                })
+        
+        return rows, columns
+    
+    def _calculate_row_bbox(self, row_cells: List[Dict]) -> List[int]:
+        """Calculate bounding box for a row"""
+        if not row_cells:
+            return [0, 0, 0, 0]
+        
+        x_min = min(cell['bbox'][0] for cell in row_cells)
+        y_min = min(cell['bbox'][1] for cell in row_cells)
+        x_max = max(cell['bbox'][2] for cell in row_cells)
+        y_max = max(cell['bbox'][3] for cell in row_cells)
+        
+        return [x_min, y_min, x_max, y_max]
+    
+    def _calculate_column_bbox(self, col_cells: List[Dict]) -> List[int]:
+        """Calculate bounding box for a column"""
+        if not col_cells:
+            return [0, 0, 0, 0]
+        
+        x_min = min(cell['bbox'][0] for cell in col_cells)
+        y_min = min(cell['bbox'][1] for cell in col_cells)
+        x_max = max(cell['bbox'][2] for cell in col_cells)
+        y_max = max(cell['bbox'][3] for cell in col_cells)
+        
+        return [x_min, y_min, x_max, y_max]
+    
+    def _identify_headers(self, cells: List[Dict], grid_info: Dict) -> Dict:
+        """Identify column and row headers"""
+        column_headers = []
+        row_headers = []
+        
+        # Column headers (first row)
+        first_row_cells = [cell for cell in cells if cell.get('row', 0) == 0]
+        for cell in first_row_cells:
+            if cell.get('cell_type') in ['header', 'column_header']:
+                column_headers.append(cell)
+        
+        # Row headers (first column)
+        first_col_cells = [cell for cell in cells if cell.get('col', 0) == 0]
+        for cell in first_col_cells:
+            if cell.get('cell_type') in ['header', 'row_header']:
+                row_headers.append(cell)
+        
+        return {
+            "column_headers": column_headers,
+            "row_headers": row_headers
+        }
+    
     def _create_visualization(self, input_file: str, output_prefix: str, intermediate_dir: Path, 
-                            layout_result: Dict, table_result: Dict) -> Path:
+                            layout_result: Dict, table_result: Dict, table_transformer_result: Dict = None) -> Path:
         """Create visualization of layout and table detection results"""
-        print("  🎨 Creating layout/table visualization...")
+        print("  VISUALIZATION Creating layout/table visualization...")
         
         # Create separate visualization directories inside stage1
         stage1_dir = intermediate_dir / "stage1_layout_table"
         layout_viz_dir = stage1_dir / "layout_outputs"
         tableformer_viz_dir = stage1_dir / "tableformer_outputs"
+        table_transformer_viz_dir = stage1_dir / "table_transformer_outputs"
         layout_viz_dir.mkdir(parents=True, exist_ok=True)
         tableformer_viz_dir.mkdir(parents=True, exist_ok=True)
+        table_transformer_viz_dir.mkdir(parents=True, exist_ok=True)
         
         # Create layout visualization
         layout_viz_path = layout_viz_dir / f"{output_prefix}_layout_annotated.png"
         tableformer_viz_path = tableformer_viz_dir / f"{output_prefix}_tableformer_annotated.png"
+        table_transformer_viz_path = table_transformer_viz_dir / f"{output_prefix}_table_transformer_annotated.png"
         
         try:
             # Load original image
@@ -404,21 +992,34 @@ class LayoutTableDetector:
             tableformer_canvas.paste(original_img)
             tableformer_draw = ImageDraw.Draw(tableformer_canvas)
             
-            # Draw only table cells from TableFormer results
-            tableformer_results = table_result.get("tableformer_results", [])
-            for i, tf_result in enumerate(tableformer_results):
-                self._draw_tableformer_result(tableformer_draw, tf_result, i, small_font)
+            # Draw enhanced table structure from TableFormer results
+            enhanced_tables = table_result.get("enhanced_table_structure", [])
+            for i, table_structure in enumerate(enhanced_tables):
+                self._draw_enhanced_table_structure(tableformer_draw, table_structure, i, small_font)
+            
+            # Create Table Transformer visualization
+            if table_transformer_result:
+                table_transformer_canvas = Image.new('RGB', (img_width, img_height), 'white')
+                table_transformer_canvas.paste(original_img)
+                table_transformer_draw = ImageDraw.Draw(table_transformer_canvas)
+                
+                # Draw Table Transformer structure
+                enhanced_structure = table_transformer_result.get("enhanced_table_structure", {})
+                self._draw_table_transformer_structure(table_transformer_draw, enhanced_structure, small_font)
+                
+                table_transformer_canvas.save(table_transformer_viz_path)
+                print(f"    SUCCESS Table Transformer visualization saved: {table_transformer_viz_path}")
             
             # Save visualizations
             layout_canvas.save(layout_viz_path)
             tableformer_canvas.save(tableformer_viz_path)
-            print(f"    ✅ Layout visualization saved: {layout_viz_path}")
-            print(f"    ✅ TableFormer visualization saved: {tableformer_viz_path}")
+            print(f"    SUCCESS Layout visualization saved: {layout_viz_path}")
+            print(f"    SUCCESS TableFormer visualization saved: {tableformer_viz_path}")
             
             return layout_viz_path
             
         except Exception as e:
-            print(f"    ❌ Error creating visualization: {e}")
+            print(f"    ERROR Error creating visualization: {e}")
             # Create a simple placeholder image
             placeholder = Image.new('RGB', (800, 600), 'lightgray')
             placeholder.save(layout_viz_path)
@@ -480,6 +1081,174 @@ class LayoutTableDetector:
                 # Add cell number
                 draw.text((cx1+2, cy1+2), str(j+1), fill="green")
     
+    def _draw_enhanced_table_structure(self, draw: ImageDraw.Draw, table_structure: Dict, table_index: int, font):
+        """Draw enhanced table structure like Table Transformer with different colors for different elements"""
+        
+        # Table Transformer-like colors
+        colors = {
+            'table': (0.000, 0.447, 0.741),           # Blue
+            'table_column': (0.850, 0.325, 0.098),    # Red  
+            'table_row': (0.929, 0.694, 0.125),       # Orange
+            'table_column_header': (0.494, 0.184, 0.556),  # Purple
+            'table_projected_row_header': (0.466, 0.674, 0.188),  # Green
+            'table_spanning_cell': (0.301, 0.745, 0.933)  # Light Blue
+        }
+        
+        # Convert colors to RGB (0-255)
+        rgb_colors = {}
+        for key, color in colors.items():
+            rgb_colors[key] = tuple(int(c * 255) for c in color)
+        
+        # Draw table boundary
+        table_bbox = table_structure.get("table_bbox", [0, 0, 100, 100])
+        if len(table_bbox) >= 4:
+            x1, y1, x2, y2 = map(int, table_bbox[:4])
+            draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table'], width=3)
+            draw.text((x1, y1-25), f"Table {table_index+1}", fill=rgb_colors['table'], font=font)
+        
+        # Draw rows
+        rows = table_structure.get("rows", [])
+        for row_idx, row in enumerate(rows):
+            row_bbox = row.get("bbox", [0, 0, 0, 0])
+            if len(row_bbox) >= 4:
+                rx1, ry1, rx2, ry2 = map(int, row_bbox[:4])
+                draw.rectangle([rx1, ry1, rx2, ry2], outline=rgb_colors['table_row'], width=2)
+                draw.text((rx1+5, ry1+5), f"Row {row_idx}", fill=rgb_colors['table_row'], font=font)
+        
+        # Draw columns  
+        columns = table_structure.get("columns", [])
+        for col_idx, column in enumerate(columns):
+            col_bbox = column.get("bbox", [0, 0, 0, 0])
+            if len(col_bbox) >= 4:
+                cx1, cy1, cx2, cy2 = map(int, col_bbox[:4])
+                draw.rectangle([cx1, cy1, cx2, cy2], outline=rgb_colors['table_column'], width=2)
+                draw.text((cx1+5, cy1+5), f"Col {col_idx}", fill=rgb_colors['table_column'], font=font)
+        
+        # Draw individual cells with different colors based on type
+        cells = table_structure.get("cells", [])
+        for cell in cells:
+            cell_bbox = cell.get("bbox", [0, 0, 0, 0])
+            cell_type = cell.get("cell_type", "data_cell")
+            cell_id = cell.get("cell_id", "")
+            
+            if len(cell_bbox) >= 4:
+                cx1, cy1, cx2, cy2 = map(int, cell_bbox[:4])
+                
+                # Choose color based on cell type
+                if cell_type == "header" or cell_type == "column_header":
+                    color = rgb_colors['table_column_header']
+                elif cell_type == "row_header":
+                    color = rgb_colors['table_projected_row_header']
+                else:
+                    color = rgb_colors['table_spanning_cell']
+                
+                # Draw cell boundary
+                draw.rectangle([cx1, cy1, cx2, cy2], outline=color, width=1)
+                
+                # Draw cell ID
+                draw.text((cx1+2, cy1+2), cell_id, fill=color, font=font)
+        
+        # Draw headers with special highlighting
+        headers = table_structure.get("headers", {})
+        column_headers = headers.get("column_headers", [])
+        row_headers = headers.get("row_headers", [])
+        
+        # Highlight column headers
+        for header in column_headers:
+            header_bbox = header.get("bbox", [0, 0, 0, 0])
+            if len(header_bbox) >= 4:
+                hx1, hy1, hx2, hy2 = map(int, header_bbox[:4])
+                # Draw thicker border for headers
+                draw.rectangle([hx1, hy1, hx2, hy2], outline=rgb_colors['table_column_header'], width=3)
+                draw.text((hx1+5, hy1+5), "HEADER", fill=rgb_colors['table_column_header'], font=font)
+        
+        # Highlight row headers
+        for header in row_headers:
+            header_bbox = header.get("bbox", [0, 0, 0, 0])
+            if len(header_bbox) >= 4:
+                hx1, hy1, hx2, hy2 = map(int, header_bbox[:4])
+                # Draw thicker border for headers
+                draw.rectangle([hx1, hy1, hx2, hy2], outline=rgb_colors['table_projected_row_header'], width=3)
+                draw.text((hx1+5, hy1+5), "ROW_HEADER", fill=rgb_colors['table_projected_row_header'], font=font)
+    
+    def _draw_table_transformer_structure(self, draw: ImageDraw.Draw, enhanced_structure: Dict, font):
+        """Draw Table Transformer structure with exact colors from the notebook"""
+        
+        # Table Transformer colors (exact from notebook)
+        colors = {
+            'table': (0.000, 0.447, 0.741),           # Blue
+            'table_column': (0.850, 0.325, 0.098),    # Red  
+            'table_row': (0.929, 0.694, 0.125),       # Orange
+            'table_column_header': (0.494, 0.184, 0.556),  # Purple
+            'table_projected_row_header': (0.466, 0.674, 0.188),  # Green
+            'table_spanning_cell': (0.301, 0.745, 0.933)  # Light Blue
+        }
+        
+        # Convert colors to RGB (0-255)
+        rgb_colors = {}
+        for key, color in colors.items():
+            rgb_colors[key] = tuple(int(c * 255) for c in color)
+        
+        # Draw tables
+        tables = enhanced_structure.get('tables', [])
+        for i, table in enumerate(tables):
+            bbox = table.get('bbox', [0, 0, 100, 100])
+            score = table.get('score', 0.0)
+            if len(bbox) >= 4:
+                x1, y1, x2, y2 = map(int, bbox[:4])
+                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table'], width=3)
+                draw.text((x1, y1-25), f"Table {i+1}: {score:.2f}", fill=rgb_colors['table'], font=font)
+        
+        # Draw table columns
+        table_columns = enhanced_structure.get('table_columns', [])
+        for i, column in enumerate(table_columns):
+            bbox = column.get('bbox', [0, 0, 100, 100])
+            score = column.get('score', 0.0)
+            if len(bbox) >= 4:
+                x1, y1, x2, y2 = map(int, bbox[:4])
+                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table_column'], width=2)
+                draw.text((x1+5, y1+5), f"Col {i+1}: {score:.2f}", fill=rgb_colors['table_column'], font=font)
+        
+        # Draw table rows
+        table_rows = enhanced_structure.get('table_rows', [])
+        for i, row in enumerate(table_rows):
+            bbox = row.get('bbox', [0, 0, 100, 100])
+            score = row.get('score', 0.0)
+            if len(bbox) >= 4:
+                x1, y1, x2, y2 = map(int, bbox[:4])
+                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table_row'], width=2)
+                draw.text((x1+5, y1+5), f"Row {i+1}: {score:.2f}", fill=rgb_colors['table_row'], font=font)
+        
+        # Draw column headers
+        column_headers = enhanced_structure.get('column_headers', [])
+        for i, header in enumerate(column_headers):
+            bbox = header.get('bbox', [0, 0, 100, 100])
+            score = header.get('score', 0.0)
+            if len(bbox) >= 4:
+                x1, y1, x2, y2 = map(int, bbox[:4])
+                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table_column_header'], width=3)
+                draw.text((x1+5, y1+5), f"Col Header {i+1}: {score:.2f}", fill=rgb_colors['table_column_header'], font=font)
+        
+        # Draw row headers
+        row_headers = enhanced_structure.get('row_headers', [])
+        for i, header in enumerate(row_headers):
+            bbox = header.get('bbox', [0, 0, 100, 100])
+            score = header.get('score', 0.0)
+            if len(bbox) >= 4:
+                x1, y1, x2, y2 = map(int, bbox[:4])
+                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table_projected_row_header'], width=3)
+                draw.text((x1+5, y1+5), f"Row Header {i+1}: {score:.2f}", fill=rgb_colors['table_projected_row_header'], font=font)
+        
+        # Draw spanning cells
+        spanning_cells = enhanced_structure.get('spanning_cells', [])
+        for i, cell in enumerate(spanning_cells):
+            bbox = cell.get('bbox', [0, 0, 100, 100])
+            score = cell.get('score', 0.0)
+            if len(bbox) >= 4:
+                x1, y1, x2, y2 = map(int, bbox[:4])
+                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table_spanning_cell'], width=1)
+                draw.text((x1+2, y1+2), f"Cell {i+1}: {score:.2f}", fill=rgb_colors['table_spanning_cell'], font=font)
+    
     def _draw_table(self, draw: ImageDraw.Draw, table: Dict, index: int, font):
         """Draw a single table"""
         # Get table bounding box
@@ -515,7 +1284,7 @@ class LayoutTableDetector:
     def _create_coordinates_json(self, output_prefix: str, intermediate_dir: Path, 
                                layout_result: Dict, table_result: Dict) -> Path:
         """Create structured coordinate JSON"""
-        print("  📄 Creating coordinates JSON...")
+        print("  FILES Creating coordinates JSON...")
         
         # Create separate coordinate directories inside stage1
         stage1_dir = intermediate_dir / "stage1_layout_table"
@@ -557,22 +1326,27 @@ class LayoutTableDetector:
         with open(layout_coords_path, 'w') as f:
             json.dump(layout_coords_data, f, indent=2)
         
-        # Save tableformer coordinates
+        # Save tableformer coordinates with enhanced structure
         tableformer_coords_data = {
             "stage": 1,
             "stage_name": "table_detection",
             "processing_timestamp": self._get_timestamp(),
             "tableformer_results": table_result.get("tableformer_results", []),
+            "enhanced_table_structure": table_result.get("enhanced_table_structure", []),
+            "processing_metadata": table_result.get("processing_metadata", {}),
             "summary": {
-                "total_tables": table_result.get("processing_metadata", {}).get("total_tables", 0)
+                "total_tables": table_result.get("processing_metadata", {}).get("total_tables", 0),
+                "total_cells": table_result.get("processing_metadata", {}).get("total_cells", 0),
+                "total_rows": table_result.get("processing_metadata", {}).get("total_rows", 0),
+                "total_columns": table_result.get("processing_metadata", {}).get("total_columns", 0)
             }
         }
         
         with open(tableformer_coords_path, 'w') as f:
             json.dump(tableformer_coords_data, f, indent=2)
         
-        print(f"    ✅ Layout coordinates JSON saved: {layout_coords_path}")
-        print(f"    ✅ TableFormer coordinates JSON saved: {tableformer_coords_path}")
+        print(f"    SUCCESS Layout coordinates JSON saved: {layout_coords_path}")
+        print(f"    SUCCESS TableFormer coordinates JSON saved: {tableformer_coords_path}")
         return layout_coords_path
     
     def _count_element_types(self, layout_elements: List[Dict]) -> Dict[str, int]:
@@ -611,13 +1385,13 @@ def main():
     
     # Print results
     if result.get("success", False):
-        print(f"\n✅ Stage 1 completed successfully!")
+        print(f"\nSUCCESS Stage 1 completed successfully!")
         print(f"   Layout elements: {result.get('layout_count', 0)}")
         print(f"   Tables: {result.get('table_count', 0)}")
         print(f"   Visualization: {result.get('visualization_path', 'N/A')}")
         print(f"   Coordinates: {result.get('coordinates_path', 'N/A')}")
     else:
-        print(f"\n❌ Stage 1 failed: {result.get('error', 'Unknown error')}")
+        print(f"\nERROR Stage 1 failed: {result.get('error', 'Unknown error')}")
         sys.exit(1)
 
 if __name__ == "__main__":
