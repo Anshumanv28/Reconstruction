@@ -206,8 +206,8 @@ class LayoutTableDetector:
             # Run layout detection
             layout_result = self._run_layout_detection(input_file, output_prefix, intermediate_dir)
             
-            # Run table detection
-            table_result = self._run_table_detection(input_file, output_prefix, intermediate_dir)
+            # Run table detection using layout results
+            table_result = self._run_table_detection(input_file, output_prefix, intermediate_dir, layout_result)
             
             # Run Table Transformer structure recognition
             table_transformer_result = self._run_table_transformer_structure_recognition(input_file, output_prefix, intermediate_dir, table_result)
@@ -218,12 +218,16 @@ class LayoutTableDetector:
             # Create coordinates JSON
             coordinates_path = self._create_coordinates_json(output_prefix, intermediate_dir, layout_result, table_result)
             
+            # Create coordinate reference visualization
+            coordinate_ref_path = self._create_coordinate_reference_visualization(input_file, output_prefix, intermediate_dir)
+            
             return {
                 "success": True,
                 "layout_count": len(layout_result.get("layout_elements", [])),
                 "table_count": len(table_result.get("tables", [])),
                 "visualization_path": str(visualization_path),
-                "coordinates_path": str(coordinates_path)
+                "coordinates_path": str(coordinates_path),
+                "coordinate_reference_path": str(coordinate_ref_path)
             }
             
         except Exception as e:
@@ -238,8 +242,6 @@ class LayoutTableDetector:
         stage1_dir = intermediate_dir / "stage1_layout_table"
         layout_dir = stage1_dir / "layout_outputs"
         layout_dir.mkdir(parents=True, exist_ok=True)
-        
-        output_file = layout_dir / f"{output_prefix}_layout_predictions.json"
         
         try:
             if self.layout_predictor:
@@ -258,15 +260,12 @@ class LayoutTableDetector:
                         "bbox": [pred.get("l", 0), pred.get("t", 0), pred.get("r", 0), pred.get("b", 0)]
                     })
                 
-                # Save results
+                # Create layout data (no longer saving predictions file)
                 layout_data = {
                     "layout_elements": layout_elements,
                     "total_elements": len(layout_elements),
                     "image_path": input_file
                 }
-                
-                with open(output_file, 'w') as f:
-                    json.dump(layout_data, f, indent=2)
                 
                 print(f"    SUCCESS Layout detection completed: {len(layout_elements)} elements")
                 return layout_data
@@ -274,8 +273,6 @@ class LayoutTableDetector:
             else:
                 # Fallback: create empty layout data
                 layout_data = {"layout_elements": [], "total_elements": 0}
-                with open(output_file, 'w') as f:
-                    json.dump(layout_data, f, indent=2)
                 print(f"    WARNING  Layout predictor not available, created empty layout data")
                 return layout_data
                 
@@ -283,63 +280,78 @@ class LayoutTableDetector:
             print(f"    ERROR Layout detection failed: {e}")
             # Create fallback data
             layout_data = {"layout_elements": [], "total_elements": 0}
-            with open(output_file, 'w') as f:
-                json.dump(layout_data, f, indent=2)
             return layout_data
     
-    def _run_table_detection(self, input_file: str, output_prefix: str, intermediate_dir: Path) -> Dict:
-        """Run table detection using TableFormer"""
-        print("  TABLES Running table detection...")
+    def _run_table_detection(self, input_file: str, output_prefix: str, intermediate_dir: Path, layout_result: Dict) -> Dict:
+        """Run unified table detection using normalized coordinates from layout detection"""
+        print("  TABLES Running unified table detection...")
         
         # Create separate tableformer output directory inside stage1
         stage1_dir = intermediate_dir / "stage1_layout_table"
         tableformer_dir = stage1_dir / "tableformer_outputs"
         tableformer_dir.mkdir(parents=True, exist_ok=True)
         
-        output_file = tableformer_dir / f"{output_prefix}_tableformer_results.json"
-        
         try:
-            if self.table_predictor:
-                # First, run layout detection to find tables
-                layout_predictions = list(self.layout_predictor.predict(Image.open(input_file)))
-                
-                # Extract table bounding boxes from layout predictions
-                table_bboxes = []
-                for pred in layout_predictions:
-                    if pred.get("label", "").lower() == "table":
-                        bbox = [pred["l"], pred["t"], pred["r"], pred["b"]]
+            # Extract table bounding boxes from layout detection results
+            layout_elements = layout_result.get("layout_elements", [])
+            table_bboxes = []
+            
+            for element in layout_elements:
+                if element.get("label", "").lower() == "table":
+                    bbox = element.get("bbox", [])
+                    if len(bbox) >= 4:
                         table_bboxes.append(bbox)
+            
+            if not table_bboxes:
+                print("    WARNING  No tables found in layout detection")
+                return {"tables": [], "total_tables": 0, "normalized_coordinates": []}
+            
+            print(f"    TABLES Found {len(table_bboxes)} table(s) from layout detection")
+            
+            # Load original image for cropping
+            image = Image.open(input_file)
+            
+            # Normalize coordinates: create padded coordinates for all models
+            normalized_tables = []
+            padding = 20  # 20 pixels padding around the table
+            
+            for table_idx, table_bbox in enumerate(table_bboxes):
+                print(f"      Normalizing table {table_idx + 1} coordinates...")
                 
-                if not table_bboxes:
-                    print("    WARNING  No tables found in layout detection")
-                    table_data = {"tables": [], "total_tables": 0}
-                    with open(output_file, 'w') as f:
-                        json.dump(table_data, f, indent=2)
-                    return table_data
+                # Extract original coordinates
+                x1, y1, x2, y2 = map(int, table_bbox[:4])
                 
-                print(f"    TABLES Found {len(table_bboxes)} table(s) in layout detection")
+                # Apply padding with image boundary checks
+                padded_x1 = max(0, x1 - padding)
+                padded_y1 = max(0, y1 - padding)
+                padded_x2 = min(image.width, x2 + padding)
+                padded_y2 = min(image.height, y2 + padding)
                 
-                # Load original image for cropping
-                image = Image.open(input_file)
+                print(f"        Original bbox: [{x1}, {y1}, {x2}, {y2}]")
+                print(f"        Padded bbox: [{padded_x1}, {padded_y1}, {padded_x2}, {padded_y2}]")
                 
-                # Process each table region individually with TableFormer (cropped regions only)
-                multi_tf_output = []
+                # Create normalized table data structure
+                normalized_table = {
+                    "table_id": f"table_{table_idx + 1}",
+                    "original_bbox": [x1, y1, x2, y2],
+                    "padded_bbox": [padded_x1, padded_y1, padded_x2, padded_y2],
+                    "crop_size": [padded_x2 - padded_x1, padded_y2 - padded_y1],
+                    "layout_confidence": next((elem.get("confidence", 0) for elem in layout_elements 
+                                             if elem.get("bbox") == table_bbox), 0),
+                    "tableformer_results": None,
+                    "table_transformer_results": None
+                }
                 
-                for table_idx, table_bbox in enumerate(table_bboxes):
+                normalized_tables.append(normalized_table)
+            
+            # Process with TableFormer using normalized coordinates
+            if self.table_predictor:
+                print("    PROCESSING Running TableFormer on normalized coordinates...")
+                for table_idx, normalized_table in enumerate(normalized_tables):
                     print(f"      Processing table {table_idx + 1} with TableFormer...")
                     
-                    # Add small padding around table region for breathing space
-                    x1, y1, x2, y2 = map(int, table_bbox[:4])
-                    padding = 20  # 20 pixels padding around the table
-                    
-                    # Apply padding with image boundary checks
-                    padded_x1 = max(0, x1 - padding)
-                    padded_y1 = max(0, y1 - padding)
-                    padded_x2 = min(image.width, x2 + padding)
-                    padded_y2 = min(image.height, y2 + padding)
-                    
-                    print(f"        Original bbox: [{x1}, {y1}, {x2}, {y2}]")
-                    print(f"        Padded bbox: [{padded_x1}, {padded_y1}, {padded_x2}, {padded_y2}]")
+                    padded_bbox = normalized_table["padded_bbox"]
+                    padded_x1, padded_y1, padded_x2, padded_y2 = padded_bbox
                     
                     # Crop padded table region from original image
                     table_crop = image.crop((padded_x1, padded_y1, padded_x2, padded_y2))
@@ -381,169 +393,139 @@ class LayoutTableDetector:
                     
                     # Adjust coordinates back to original image space
                     if tf_output:
-                        # Pass both original bbox and padded bbox for coordinate adjustment
-                        padded_bbox = [padded_x1, padded_y1, padded_x2, padded_y2]
-                        adjusted_output = self._adjust_tableformer_coordinates(tf_output[0], table_bbox, padded_bbox)
-                        multi_tf_output.append(adjusted_output)
+                        original_bbox = normalized_table["original_bbox"]
+                        adjusted_output = self._adjust_tableformer_coordinates(tf_output[0], original_bbox, padded_bbox)
+                        normalized_table["tableformer_results"] = adjusted_output
                     else:
-                        multi_tf_output.append({})
-                
-                print(f"    SUCCESS TableFormer processed {len(multi_tf_output)} cropped table regions")
-                
-                # Enhanced processing: Extract detailed table structure
-                enhanced_tables = self._extract_detailed_table_structure(multi_tf_output, table_bboxes, image)
-                
-                # Save results with enhanced structure
-                enhanced_results = {
-                    'tableformer_results': multi_tf_output,
-                    'enhanced_table_structure': enhanced_tables,
-                    'processing_metadata': {
-                        'total_tables': len(table_bboxes),
-                        'total_cells': sum(len(table.get('cells', [])) for table in enhanced_tables),
-                        'total_rows': sum(len(table.get('rows', [])) for table in enhanced_tables),
-                        'total_columns': sum(len(table.get('columns', [])) for table in enhanced_tables),
-                        'processing_timestamp': self._get_timestamp()
-                    }
+                        normalized_table["tableformer_results"] = {}
+            
+            # Enhanced processing: Extract detailed table structure
+            enhanced_tables = self._extract_detailed_table_structure(
+                [table["tableformer_results"] for table in normalized_tables if table["tableformer_results"]], 
+                [table["original_bbox"] for table in normalized_tables], 
+                image
+            )
+            
+            # Create unified results
+            unified_results = {
+                'normalized_tables': normalized_tables,
+                'enhanced_table_structure': enhanced_tables,
+                'processing_metadata': {
+                    'total_tables': len(table_bboxes),
+                    'total_cells': sum(len(table.get('cells', [])) for table in enhanced_tables),
+                    'total_rows': sum(len(table.get('rows', [])) for table in enhanced_tables),
+                    'total_columns': sum(len(table.get('columns', [])) for table in enhanced_tables),
+                    'processing_timestamp': self._get_timestamp(),
+                    'coordinate_normalization': 'unified_padded_coordinates'
                 }
-                
-                with open(output_file, 'w') as f:
-                    json.dump(enhanced_results, f, indent=2)
-                
-                print(f"    SUCCESS Enhanced table analysis completed:")
-                print(f"       Tables: {len(table_bboxes)}")
-                print(f"       Total cells: {enhanced_results['processing_metadata']['total_cells']}")
-                print(f"       Total rows: {enhanced_results['processing_metadata']['total_rows']}")
-                print(f"       Total columns: {enhanced_results['processing_metadata']['total_columns']}")
-                return enhanced_results
-                
-            else:
-                # Fallback: create empty table data
-                table_data = {"tables": [], "total_tables": 0}
-                with open(output_file, 'w') as f:
-                    json.dump(table_data, f, indent=2)
-                print(f"    WARNING  Table predictor not available, created empty table data")
-                return table_data
-                
+            }
+            
+            print(f"    SUCCESS Unified table detection completed:")
+            print(f"       Tables: {len(table_bboxes)}")
+            print(f"       Total cells: {unified_results['processing_metadata']['total_cells']}")
+            print(f"       Total rows: {unified_results['processing_metadata']['total_rows']}")
+            print(f"       Total columns: {unified_results['processing_metadata']['total_columns']}")
+            return unified_results
+            
         except Exception as e:
-            print(f"    ERROR Table detection failed: {e}")
+            print(f"    ERROR Unified table detection failed: {e}")
             # Create fallback data
-            table_data = {"tables": [], "total_tables": 0}
-            with open(output_file, 'w') as f:
-                json.dump(table_data, f, indent=2)
-            return table_data
+            return {"tables": [], "total_tables": 0, "normalized_coordinates": []}
     
     def _run_table_transformer_structure_recognition(self, input_file: str, output_prefix: str, intermediate_dir: Path, table_result: Dict) -> Dict:
-        """Run Table Transformer structure recognition on cropped table regions only"""
-        print("  TABLES Running Table Transformer structure recognition on table regions...")
+        """Run Table Transformer structure recognition using normalized coordinates"""
+        print("  TABLES Running Table Transformer structure recognition on normalized coordinates...")
         
         # Create separate table transformer output directory inside stage1
         stage1_dir = intermediate_dir / "stage1_layout_table"
         table_transformer_dir = stage1_dir / "table_transformer_outputs"
         table_transformer_dir.mkdir(parents=True, exist_ok=True)
         
-        output_file = table_transformer_dir / f"{output_prefix}_table_transformer_results.json"
-        
         try:
             if self.table_transformer_model and self.feature_extractor:
                 # Load original image
                 original_image = Image.open(input_file).convert("RGB")
                 
-                # Get table regions from TableFormer results
-                tableformer_results = table_result.get("tableformer_results", [])
+                # Get normalized table data
+                normalized_tables = table_result.get("normalized_tables", [])
                 all_table_structures = []
                 
-                print(f"    PROCESSING Analyzing {len(tableformer_results)} table regions...")
+                print(f"    PROCESSING Analyzing {len(normalized_tables)} normalized table regions...")
                 
-                for table_idx, tf_result in enumerate(tableformer_results):
-                    print(f"      Processing table {table_idx + 1}...")
+                for table_idx, normalized_table in enumerate(normalized_tables):
+                    print(f"      Processing table {table_idx + 1} with Table Transformer...")
                     
-                    # Extract table bounding box
-                    predict_details = tf_result.get("predict_details", {})
-                    table_bbox = predict_details.get("table_bbox", [])
+                    # Use the same padded coordinates as TableFormer
+                    padded_bbox = normalized_table["padded_bbox"]
+                    padded_x1, padded_y1, padded_x2, padded_y2 = padded_bbox
                     
-                    if len(table_bbox) >= 4:
-                        # Add small padding around table region for breathing space
-                        x1, y1, x2, y2 = map(int, table_bbox[:4])
-                        padding = 20  # 20 pixels padding around the table
-                        
-                        # Apply padding with image boundary checks
-                        padded_x1 = max(0, x1 - padding)
-                        padded_y1 = max(0, y1 - padding)
-                        padded_x2 = min(original_image.width, x2 + padding)
-                        padded_y2 = min(original_image.height, y2 + padding)
-                        
-                        print(f"        Original bbox: [{x1}, {y1}, {x2}, {y2}]")
-                        print(f"        Padded bbox: [{padded_x1}, {padded_y1}, {padded_x2}, {padded_y2}]")
-                        
-                        # Crop padded table region from original image
-                        table_crop = original_image.crop((padded_x1, padded_y1, padded_x2, padded_y2))
-                        
-                        # Prepare cropped table image for Table Transformer
-                        encoding = self.feature_extractor(table_crop, return_tensors="pt")
-                        
-                        # Run Table Transformer structure recognition on cropped table
-                        with torch.no_grad():
-                            outputs = self.table_transformer_model(**encoding)
-                        
-                        # Post-process results for cropped table
-                        target_sizes = [table_crop.size[::-1]]
-                        results = self.feature_extractor.post_process_object_detection(
-                            outputs, threshold=0.6, target_sizes=target_sizes
-                        )[0]
-                        
-                        # Extract detailed structure for this table
-                        padded_bbox = [padded_x1, padded_y1, padded_x2, padded_y2]
-                        table_structure = self._extract_table_transformer_structure_for_table(
-                            results, table_crop, table_idx, table_bbox, padded_bbox
-                        )
-                        all_table_structures.append(table_structure)
-                        
-                        print(f"        Extracted: {table_structure.get('total_rows', 0)} rows, {table_structure.get('total_columns', 0)} columns")
-                        print(f"        Headers: {table_structure.get('total_column_headers', 0)} column headers, {table_structure.get('total_row_headers', 0)} row headers")
-                        print(f"        Cells: {table_structure.get('total_cells', 0)} spanning cells")
+                    print(f"        Using normalized padded bbox: [{padded_x1}, {padded_y1}, {padded_x2}, {padded_y2}]")
+                    
+                    # Crop padded table region from original image
+                    table_crop = original_image.crop((padded_x1, padded_y1, padded_x2, padded_y2))
+                    
+                    # Prepare cropped table image for Table Transformer
+                    encoding = self.feature_extractor(table_crop, return_tensors="pt")
+                    
+                    # Run Table Transformer structure recognition on cropped table
+                    with torch.no_grad():
+                        outputs = self.table_transformer_model(**encoding)
+                    
+                    # Post-process results for cropped table
+                    target_sizes = [table_crop.size[::-1]]
+                    results = self.feature_extractor.post_process_object_detection(
+                        outputs, threshold=0.6, target_sizes=target_sizes
+                    )[0]
+                    
+                    # Extract detailed structure for this table
+                    original_bbox = normalized_table["original_bbox"]
+                    table_structure = self._extract_table_transformer_structure_for_table(
+                        results, table_crop, table_idx, original_bbox, padded_bbox
+                    )
+                    
+                    # Store Table Transformer results in normalized table
+                    normalized_table["table_transformer_results"] = table_structure
+                    all_table_structures.append(table_structure)
+                    
+                    print(f"        Extracted: {table_structure.get('total_rows', 0)} rows, {table_structure.get('total_columns', 0)} columns")
+                    print(f"        Headers: {table_structure.get('total_column_headers', 0)} column headers, {table_structure.get('total_row_headers', 0)} row headers")
+                    print(f"        Cells: {table_structure.get('total_cells', 0)} spanning cells")
                 
                 # Combine all table structures
                 combined_structure = self._combine_table_structures(all_table_structures)
                 
-                # Save results
-                enhanced_results = {
+                # Create unified results with normalized tables
+                unified_results = {
+                    'normalized_tables': normalized_tables,
                     'table_transformer_results': {
                         'individual_tables': all_table_structures,
                         'combined_structure': combined_structure
                     },
                     'enhanced_table_structure': combined_structure,
                     'processing_metadata': {
-                        'total_tables_processed': len(tableformer_results),
+                        'total_tables_processed': len(normalized_tables),
                         'model_config': self.table_transformer_model.config.id2label,
-                        'processing_timestamp': self._get_timestamp()
+                        'processing_timestamp': self._get_timestamp(),
+                        'coordinate_normalization': 'unified_padded_coordinates'
                     }
                 }
                 
-                with open(output_file, 'w') as f:
-                    json.dump(enhanced_results, f, indent=2)
-                
                 print(f"    SUCCESS Table Transformer structure recognition completed:")
-                print(f"       Tables processed: {len(tableformer_results)}")
+                print(f"       Tables processed: {len(normalized_tables)}")
                 print(f"       Total rows: {combined_structure.get('total_rows', 0)}")
                 print(f"       Total columns: {combined_structure.get('total_columns', 0)}")
                 print(f"       Total cells: {combined_structure.get('total_cells', 0)}")
-                return enhanced_results
+                return unified_results
                 
             else:
                 # Fallback: create empty data
-                table_data = {"enhanced_table_structure": {}, "processing_metadata": {}}
-                with open(output_file, 'w') as f:
-                    json.dump(table_data, f, indent=2)
                 print(f"    WARNING  Table Transformer not available, created empty data")
-                return table_data
+                return {"enhanced_table_structure": {}, "processing_metadata": {}, "normalized_tables": []}
                 
         except Exception as e:
             print(f"    ERROR Table Transformer structure recognition failed: {e}")
             # Create fallback data
-            table_data = {"enhanced_table_structure": {}, "processing_metadata": {}}
-            with open(output_file, 'w') as f:
-                json.dump(table_data, f, indent=2)
-            return table_data
+            return {"enhanced_table_structure": {}, "processing_metadata": {}, "normalized_tables": []}
     
     def _extract_table_transformer_structure(self, results: Dict, image) -> Dict:
         """Extract detailed table structure from Table Transformer results"""
@@ -1436,11 +1418,18 @@ class LayoutTableDetector:
             json.dump(layout_coords_data, f, indent=2)
         
         # Save tableformer coordinates with enhanced structure
+        # Extract tableformer results from normalized tables
+        normalized_tables = table_result.get("normalized_tables", [])
+        tableformer_results = []
+        for table in normalized_tables:
+            if table.get("tableformer_results"):
+                tableformer_results.append(table["tableformer_results"])
+        
         tableformer_coords_data = {
             "stage": 1,
             "stage_name": "table_detection",
             "processing_timestamp": self._get_timestamp(),
-            "tableformer_results": table_result.get("tableformer_results", []),
+            "tableformer_results": tableformer_results,
             "enhanced_table_structure": table_result.get("enhanced_table_structure", []),
             "processing_metadata": table_result.get("processing_metadata", {}),
             "summary": {
@@ -1465,6 +1454,91 @@ class LayoutTableDetector:
             label = element.get('label', 'unknown')
             type_counts[label] = type_counts.get(label, 0) + 1
         return type_counts
+    
+    def _create_coordinate_reference_visualization(self, input_file: str, output_prefix: str, intermediate_dir: Path) -> Path:
+        """Create coordinate reference visualization with grid overlay"""
+        print("  COORDINATES Creating coordinate reference visualization...")
+        
+        # Create inputs_coordinates directory inside stage1
+        stage1_dir = intermediate_dir / "stage1_layout_table"
+        inputs_coords_dir = stage1_dir / "inputs_coordinates"
+        inputs_coords_dir.mkdir(parents=True, exist_ok=True)
+        
+        output_path = inputs_coords_dir / f"{output_prefix}_coordinate_reference.png"
+        
+        try:
+            # Load original image
+            image = Image.open(input_file).convert("RGB")
+            width, height = image.size
+            
+            # Create a copy for drawing
+            coord_image = image.copy()
+            draw = ImageDraw.Draw(coord_image)
+            
+            # Try to load a font, fallback to default if not available
+            try:
+                font = ImageFont.truetype("arial.ttf", 12)
+                small_font = ImageFont.truetype("arial.ttf", 10)
+            except:
+                font = ImageFont.load_default()
+                small_font = ImageFont.load_default()
+            
+            # Define grid parameters
+            grid_spacing = 100  # 100 pixel grid spacing
+            line_color = (255, 0, 0)  # Red grid lines
+            text_color = (255, 0, 0)  # Red text
+            corner_color = (0, 255, 0)  # Green for corners
+            
+            # Draw vertical grid lines
+            for x in range(0, width, grid_spacing):
+                draw.line([(x, 0), (x, height)], fill=line_color, width=1)
+                # Add x-coordinate labels
+                if x > 0:  # Skip origin label
+                    draw.text((x + 2, 2), str(x), fill=text_color, font=small_font)
+            
+            # Draw horizontal grid lines
+            for y in range(0, height, grid_spacing):
+                draw.line([(0, y), (width, y)], fill=line_color, width=1)
+                # Add y-coordinate labels
+                if y > 0:  # Skip origin label
+                    draw.text((2, y + 2), str(y), fill=text_color, font=small_font)
+            
+            # Draw corner markers
+            corner_size = 10
+            # Top-left corner
+            draw.rectangle([(0, 0), (corner_size, corner_size)], outline=corner_color, width=2)
+            draw.text((corner_size + 2, 2), "(0,0)", fill=corner_color, font=font)
+            
+            # Top-right corner
+            draw.rectangle([(width - corner_size, 0), (width, corner_size)], outline=corner_color, width=2)
+            draw.text((width - 50, 2), f"({width},0)", fill=corner_color, font=font)
+            
+            # Bottom-left corner
+            draw.rectangle([(0, height - corner_size), (corner_size, height)], outline=corner_color, width=2)
+            draw.text((corner_size + 2, height - 20), f"(0,{height})", fill=corner_color, font=font)
+            
+            # Bottom-right corner
+            draw.rectangle([(width - corner_size, height - corner_size), (width, height)], outline=corner_color, width=2)
+            draw.text((width - 80, height - 20), f"({width},{height})", fill=corner_color, font=font)
+            
+            # Add image dimensions info
+            info_text = f"Image: {width} x {height} pixels"
+            draw.text((10, height - 40), info_text, fill=text_color, font=font)
+            
+            # Add coordinate system info
+            coord_text = f"Grid: {grid_spacing}px spacing | Origin: Top-left (0,0)"
+            draw.text((10, height - 25), coord_text, fill=text_color, font=small_font)
+            
+            # Save the coordinate reference image
+            coord_image.save(output_path)
+            
+            print(f"    SUCCESS Coordinate reference saved: {output_path}")
+            return output_path
+            
+        except Exception as e:
+            print(f"    ERROR Failed to create coordinate reference: {e}")
+            # Return a placeholder path even if creation failed
+            return output_path
     
     def _get_timestamp(self) -> str:
         """Get current timestamp"""
@@ -1499,6 +1573,7 @@ def main():
         print(f"   Tables: {result.get('table_count', 0)}")
         print(f"   Visualization: {result.get('visualization_path', 'N/A')}")
         print(f"   Coordinates: {result.get('coordinates_path', 'N/A')}")
+        print(f"   Coordinate Reference: {result.get('coordinate_reference_path', 'N/A')}")
     else:
         print(f"\nERROR Stage 1 failed: {result.get('error', 'Unknown error')}")
         sys.exit(1)

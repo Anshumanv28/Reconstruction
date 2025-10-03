@@ -159,15 +159,24 @@ class PipelineOrchestrator:
             print(f"ERROR Stage 4 failed: {e}")
             return {"success": False, "error": str(e)}
     
-    def run_single_stage(self, stage: int, input_file: str) -> Dict:
-        """Run a single stage of the pipeline"""
+    def run_single_stage(self, stage: int, input_path: str) -> Dict:
+        """Run a single stage of the pipeline on a single file or directory of files"""
         if stage not in self.stages:
             return {"success": False, "error": f"Invalid stage: {stage}"}
         
-        input_path = Path(input_file)
-        if not input_path.exists():
-            return {"success": False, "error": f"Input file not found: {input_file}"}
+        input_path_obj = Path(input_path)
+        if not input_path_obj.exists():
+            return {"success": False, "error": f"Input path not found: {input_path}"}
         
+        # Check if input is a directory
+        if input_path_obj.is_dir():
+            return self._run_single_stage_on_directory(stage, input_path)
+        else:
+            return self._run_single_stage_on_file(stage, input_path)
+    
+    def _run_single_stage_on_file(self, stage: int, input_file: str) -> Dict:
+        """Run a single stage on a single file"""
+        input_path = Path(input_file)
         output_prefix = input_path.stem
         
         print(f"RUNNING STAGE {stage}: {self.stages[stage].upper()}")
@@ -188,6 +197,56 @@ class PipelineOrchestrator:
         result["execution_time"] = end_time - start_time
         
         return result
+    
+    def _run_single_stage_on_directory(self, stage: int, input_dir: str) -> Dict:
+        """Run a single stage on all files in a directory"""
+        print(f"\n{'='*80}")
+        print(f"RUNNING STAGE {stage} ON DIRECTORY: {self.stages[stage].upper()}")
+        print(f"{'='*80}")
+        print(f"Input directory: {input_dir}")
+        
+        input_path = Path(input_dir)
+        
+        # Find all image files
+        image_extensions = {'.png', '.jpg', '.jpeg', '.tiff', '.bmp'}
+        image_files = []
+        
+        for file_path in input_path.iterdir():
+            if file_path.suffix.lower() in image_extensions:
+                image_files.append(str(file_path))
+        
+        if not image_files:
+            return {"success": False, "error": "No image files found in input directory"}
+        
+        print(f"Found {len(image_files)} image files to process")
+        
+        results = {}
+        overall_start_time = time.time()
+        successful = 0
+        failed = 0
+        
+        for i, image_file in enumerate(image_files, 1):
+            print(f"\n--- Processing {i}/{len(image_files)}: {Path(image_file).name} ---")
+            
+            file_result = self._run_single_stage_on_file(stage, image_file)
+            results[Path(image_file).name] = file_result
+            
+            if file_result.get("success", False):
+                successful += 1
+            else:
+                failed += 1
+        
+        overall_end_time = time.time()
+        
+        return {
+            "success": failed == 0,
+            "total_files": len(image_files),
+            "successful": successful,
+            "failed": failed,
+            "success_rate": successful / len(image_files) * 100,
+            "total_execution_time": overall_end_time - overall_start_time,
+            "file_results": results
+        }
     
     def run_all_stages_single_input(self, input_file: str) -> Dict:
         """Run all stages with a single input file"""
@@ -296,7 +355,7 @@ def main():
     # Test mode selection
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument("--single-stage", type=int, choices=[1,2,3,4], 
-                          help="Run single stage (1-4)")
+                          help="Run single stage (1-4) on file or directory")
     mode_group.add_argument("--all-stages", action="store_true",
                           help="Run all stages with single input")
     mode_group.add_argument("--whole-pipeline-single", action="store_true",
@@ -306,7 +365,7 @@ def main():
     
     # Input specification
     parser.add_argument("--input", "-i", 
-                      help="Input file (for single stage/all stages/whole pipeline single) or directory (for whole pipeline multi)")
+                      help="Input file or directory (single-stage handles both, all-stages/whole-pipeline-single expects file, whole-pipeline-multi expects directory)")
     parser.add_argument("--intermediate-dir", default="intermediate_outputs",
                       help="Intermediate outputs directory")
     
