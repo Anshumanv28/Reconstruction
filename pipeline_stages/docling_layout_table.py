@@ -17,22 +17,19 @@ from PIL import Image, ImageDraw, ImageFont
 import os
 import numpy as np
 
-# Add the docling-ibm-models path to sys.path
-sys.path.append(str(Path(__file__).parent.parent / "docling-ibm-models"))
-
 try:
     from docling_ibm_models.layoutmodel.layout_predictor import LayoutPredictor
     LAYOUT_PREDICTOR_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     LAYOUT_PREDICTOR_AVAILABLE = False
-    print("Warning: LayoutPredictor not available")
+    print(f"Warning: LayoutPredictor not available - {e}")
 
 try:
     from docling_ibm_models.tableformer.data_management.tf_predictor import TFPredictor
     TABLE_PREDICTOR_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     TABLE_PREDICTOR_AVAILABLE = False
-    print("Warning: TFPredictor not available")
+    print(f"Warning: TFPredictor not available - {e}")
 
 try:
     from transformers import TableTransformerForObjectDetection, DetrFeatureExtractor

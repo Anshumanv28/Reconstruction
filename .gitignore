@@ -127,3 +127,41 @@ uv.lock
 !*/config.json
 !*/settings.json
 !phm_table_coords.json
+
+# Reconstruction project specific
+# Data directories
+data/
+pubtabnet_data/
+PubTabNet/
+pipe_input/
+
+# Virtual environments
+myenv/
+recon_env/
+
+# Output directories
+output_images/
+reconstructed_images/
+comparison_images/
+analysis_results/
+intermediate_outputs.zip
+
+# Generated files
+*.jsonl
+*.png
+*.jpg
+*.jpeg
+
+# Docling models cache
+docling-ibm-models/
+
+# Keep specific test images if needed
+!test_images/*.png
+!test_images/*.jpg
+!test_images/*.jpeg
+
+# Keep README images if any
+!docs/*.png
+!docs/*.jpg
+!assets/*.png
+!assets/*.jpg
