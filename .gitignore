@@ -127,3 +127,20 @@ uv.lock
 !*/config.json
 !*/settings.json
 !phm_table_coords.json
+
+# Reconstruction project specific
+data/
+recon_env/
+*.jsonl
+output_images/
+reconstructed_images/
+comparison_images/
+analysis_results/
+pubtabnet_data/
+PubTabNet/
+*.png
+*.jpg
+*.jpeg
+!test_images/*.png
+!test_images/*.jpg
+!test_images/*.jpeg
