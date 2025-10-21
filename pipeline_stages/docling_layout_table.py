@@ -31,13 +31,6 @@ except ImportError as e:
     TABLE_PREDICTOR_AVAILABLE = False
     print(f"Warning: TFPredictor not available - {e}")
 
-try:
-    from transformers import TableTransformerForObjectDetection, DetrFeatureExtractor
-    import torch
-    TABLE_TRANSFORMER_AVAILABLE = True
-except ImportError:
-    TABLE_TRANSFORMER_AVAILABLE = False
-    print("Warning: TableTransformer not available")
 
 class LayoutTableDetector:
     """Handles layout and table detection using IBM Docling models"""
@@ -46,8 +39,6 @@ class LayoutTableDetector:
         self.stage_name = "layout_table_detection"
         self.layout_predictor = None
         self.table_predictor = None
-        self.table_transformer_model = None
-        self.feature_extractor = None
         
         # Initialize predictors if available
         self._initialize_predictors()
@@ -82,19 +73,61 @@ class LayoutTableDetector:
                 self.table_predictor = self._init_tableformer()
                 print("SUCCESS Table predictor initialized")
                 
-                # Initialize Table Transformer for structure recognition
-                if TABLE_TRANSFORMER_AVAILABLE:
-                    print("INITIALIZING Initializing Table Transformer...")
-                    self.table_transformer_model = TableTransformerForObjectDetection.from_pretrained("microsoft/table-transformer-structure-recognition")
-                    self.feature_extractor = DetrFeatureExtractor()
-                    print("SUCCESS Table Transformer initialized")
-                
             else:
                 print("WARNING  Required modules not available, using fallback")
                 
         except Exception as e:
             print(f"WARNING  Error initializing predictors: {e}")
             print("   Using fallback mode")
+    
+    def _filter_and_deduplicate_elements(self, elements: List[Dict], confidence_threshold: float = 0.0) -> List[Dict]:
+        """Filter elements by confidence and remove duplicates with overlapping bboxes"""
+        
+        # Step 1: Filter by confidence threshold
+        filtered = [elem for elem in elements if elem.get('confidence', 0) >= confidence_threshold]
+        
+        # Step 2: Deduplicate by finding overlapping bboxes and keeping highest confidence
+        def bbox_iou(bbox1, bbox2):
+            """Calculate Intersection over Union (IoU) of two bounding boxes"""
+            x1_1, y1_1, x2_1, y2_1 = bbox1
+            x1_2, y1_2, x2_2, y2_2 = bbox2
+            
+            # Calculate intersection
+            x1_i = max(x1_1, x1_2)
+            y1_i = max(y1_1, y1_2)
+            x2_i = min(x2_1, x2_2)
+            y2_i = min(y2_1, y2_2)
+            
+            if x2_i < x1_i or y2_i < y1_i:
+                return 0.0
+            
+            intersection = (x2_i - x1_i) * (y2_i - y1_i)
+            
+            # Calculate union
+            area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+            area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+            union = area1 + area2 - intersection
+            
+            return intersection / union if union > 0 else 0.0
+        
+        # Sort by confidence (highest first)
+        filtered.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+        
+        # Keep track of elements to include
+        deduplicated = []
+        for elem in filtered:
+            # Check if this element significantly overlaps with any already selected element
+            is_duplicate = False
+            for selected in deduplicated:
+                iou = bbox_iou(elem['bbox'], selected['bbox'])
+                if iou > 0.8:  # High overlap threshold (80%)
+                    is_duplicate = True
+                    break
+            
+            if not is_duplicate:
+                deduplicated.append(elem)
+        
+        return deduplicated
     
     def _init_tableformer(self):
         """Initialize TableFormer with correct configuration (from batch_pipeline.py)"""
@@ -206,11 +239,8 @@ class LayoutTableDetector:
             # Run table detection using layout results
             table_result = self._run_table_detection(input_file, output_prefix, intermediate_dir, layout_result)
             
-            # Run Table Transformer structure recognition
-            table_transformer_result = self._run_table_transformer_structure_recognition(input_file, output_prefix, intermediate_dir, table_result)
-            
             # Create visualization
-            visualization_path = self._create_visualization(input_file, output_prefix, intermediate_dir, layout_result, table_result, table_transformer_result)
+            visualization_path = self._create_visualization(input_file, output_prefix, intermediate_dir, layout_result, table_result)
             
             # Create coordinates JSON
             coordinates_path = self._create_coordinates_json(output_prefix, intermediate_dir, layout_result, table_result)
@@ -257,26 +287,31 @@ class LayoutTableDetector:
                         "bbox": [pred.get("l", 0), pred.get("t", 0), pred.get("r", 0), pred.get("b", 0)]
                     })
                 
+                # Filter and deduplicate elements for cleaner visualization
+                filtered_elements = self._filter_and_deduplicate_elements(layout_elements)
+                
                 # Create layout data (no longer saving predictions file)
                 layout_data = {
-                    "layout_elements": layout_elements,
+                    "layout_elements": layout_elements,  # Keep all for JSON
+                    "layout_elements_filtered": filtered_elements,  # Filtered for visualization
                     "total_elements": len(layout_elements),
+                    "total_filtered_elements": len(filtered_elements),
                     "image_path": input_file
                 }
                 
-                print(f"    SUCCESS Layout detection completed: {len(layout_elements)} elements")
+                print(f"    SUCCESS Layout detection completed: {len(layout_elements)} elements ({len(filtered_elements)} after filtering)")
                 return layout_data
                 
             else:
                 # Fallback: create empty layout data
-                layout_data = {"layout_elements": [], "total_elements": 0}
+                layout_data = {"layout_elements": [], "layout_elements_filtered": [], "total_elements": 0, "total_filtered_elements": 0}
                 print(f"    WARNING  Layout predictor not available, created empty layout data")
                 return layout_data
                 
         except Exception as e:
             print(f"    ERROR Layout detection failed: {e}")
             # Create fallback data
-            layout_data = {"layout_elements": [], "total_elements": 0}
+            layout_data = {"layout_elements": [], "layout_elements_filtered": [], "total_elements": 0, "total_filtered_elements": 0}
             return layout_data
     
     def _run_table_detection(self, input_file: str, output_prefix: str, intermediate_dir: Path, layout_result: Dict) -> Dict:
@@ -428,234 +463,6 @@ class LayoutTableDetector:
             print(f"    ERROR Unified table detection failed: {e}")
             # Create fallback data
             return {"tables": [], "total_tables": 0, "normalized_coordinates": []}
-    
-    def _run_table_transformer_structure_recognition(self, input_file: str, output_prefix: str, intermediate_dir: Path, table_result: Dict) -> Dict:
-        """Run Table Transformer structure recognition using normalized coordinates"""
-        print("  TABLES Running Table Transformer structure recognition on normalized coordinates...")
-        
-        # Create separate table transformer output directory inside stage1
-        stage1_dir = intermediate_dir / "stage1_layout_table"
-        table_transformer_dir = stage1_dir / "table_transformer_outputs"
-        table_transformer_dir.mkdir(parents=True, exist_ok=True)
-        
-        try:
-            if self.table_transformer_model and self.feature_extractor:
-                # Load original image
-                original_image = Image.open(input_file).convert("RGB")
-                
-                # Get normalized table data
-                normalized_tables = table_result.get("normalized_tables", [])
-                all_table_structures = []
-                
-                print(f"    PROCESSING Analyzing {len(normalized_tables)} normalized table regions...")
-                
-                for table_idx, normalized_table in enumerate(normalized_tables):
-                    print(f"      Processing table {table_idx + 1} with Table Transformer...")
-                    
-                    # Use the same padded coordinates as TableFormer
-                    padded_bbox = normalized_table["padded_bbox"]
-                    padded_x1, padded_y1, padded_x2, padded_y2 = padded_bbox
-                    
-                    print(f"        Using normalized padded bbox: [{padded_x1}, {padded_y1}, {padded_x2}, {padded_y2}]")
-                    
-                    # Crop padded table region from original image
-                    table_crop = original_image.crop((padded_x1, padded_y1, padded_x2, padded_y2))
-                    
-                    # Prepare cropped table image for Table Transformer
-                    encoding = self.feature_extractor(table_crop, return_tensors="pt")
-                    
-                    # Run Table Transformer structure recognition on cropped table
-                    with torch.no_grad():
-                        outputs = self.table_transformer_model(**encoding)
-                    
-                    # Post-process results for cropped table
-                    target_sizes = [table_crop.size[::-1]]
-                    results = self.feature_extractor.post_process_object_detection(
-                        outputs, threshold=0.6, target_sizes=target_sizes
-                    )[0]
-                    
-                    # Extract detailed structure for this table
-                    original_bbox = normalized_table["original_bbox"]
-                    table_structure = self._extract_table_transformer_structure_for_table(
-                        results, table_crop, table_idx, original_bbox, padded_bbox
-                    )
-                    
-                    # Store Table Transformer results in normalized table
-                    normalized_table["table_transformer_results"] = table_structure
-                    all_table_structures.append(table_structure)
-                    
-                    print(f"        Extracted: {table_structure.get('total_rows', 0)} rows, {table_structure.get('total_columns', 0)} columns")
-                    print(f"        Headers: {table_structure.get('total_column_headers', 0)} column headers, {table_structure.get('total_row_headers', 0)} row headers")
-                    print(f"        Cells: {table_structure.get('total_cells', 0)} spanning cells")
-                
-                # Combine all table structures
-                combined_structure = self._combine_table_structures(all_table_structures)
-                
-                # Create unified results with normalized tables
-                unified_results = {
-                    'normalized_tables': normalized_tables,
-                    'table_transformer_results': {
-                        'individual_tables': all_table_structures,
-                        'combined_structure': combined_structure
-                    },
-                    'enhanced_table_structure': combined_structure,
-                    'processing_metadata': {
-                        'total_tables_processed': len(normalized_tables),
-                        'model_config': self.table_transformer_model.config.id2label,
-                        'processing_timestamp': self._get_timestamp(),
-                        'coordinate_normalization': 'unified_padded_coordinates'
-                    }
-                }
-                
-                print(f"    SUCCESS Table Transformer structure recognition completed:")
-                print(f"       Tables processed: {len(normalized_tables)}")
-                print(f"       Total rows: {combined_structure.get('total_rows', 0)}")
-                print(f"       Total columns: {combined_structure.get('total_columns', 0)}")
-                print(f"       Total cells: {combined_structure.get('total_cells', 0)}")
-                return unified_results
-                
-            else:
-                # Fallback: create empty data
-                print(f"    WARNING  Table Transformer not available, created empty data")
-                return {"enhanced_table_structure": {}, "processing_metadata": {}, "normalized_tables": []}
-                
-        except Exception as e:
-            print(f"    ERROR Table Transformer structure recognition failed: {e}")
-            # Create fallback data
-            return {"enhanced_table_structure": {}, "processing_metadata": {}, "normalized_tables": []}
-    
-    def _extract_table_transformer_structure(self, results: Dict, image) -> Dict:
-        """Extract detailed table structure from Table Transformer results"""
-        print("    PROCESSING Extracting Table Transformer structure...")
-        
-        # Table Transformer label mapping
-        id2label = {
-            0: 'table',
-            1: 'table column', 
-            2: 'table row',
-            3: 'table column header',
-            4: 'table projected row header',
-            5: 'table spanning cell'
-        }
-        
-        # Group elements by type
-        elements_by_type = {}
-        for score, label, box in zip(results['scores'], results['labels'], results['boxes']):
-            element_type = id2label.get(label.item(), 'unknown')
-            if element_type not in elements_by_type:
-                elements_by_type[element_type] = []
-            
-            elements_by_type[element_type].append({
-                'score': score.item(),
-                'label': element_type,
-                'bbox': box.tolist()
-            })
-        
-        # Extract table structure
-        tables = elements_by_type.get('table', [])
-        table_columns = elements_by_type.get('table column', [])
-        table_rows = elements_by_type.get('table row', [])
-        column_headers = elements_by_type.get('table column header', [])
-        row_headers = elements_by_type.get('table projected row header', [])
-        spanning_cells = elements_by_type.get('table spanning cell', [])
-        
-        # Create enhanced structure
-        enhanced_structure = {
-            'tables': tables,
-            'table_columns': table_columns,
-            'table_rows': table_rows,
-            'column_headers': column_headers,
-            'row_headers': row_headers,
-            'spanning_cells': spanning_cells,
-            'total_tables': len(tables),
-            'total_columns': len(table_columns),
-            'total_rows': len(table_rows),
-            'total_column_headers': len(column_headers),
-            'total_row_headers': len(row_headers),
-            'total_cells': len(spanning_cells),
-            'element_counts': {k: len(v) for k, v in elements_by_type.items()}
-        }
-        
-        print(f"        Extracted: {len(tables)} tables, {len(table_rows)} rows, {len(table_columns)} columns")
-        print(f"        Headers: {len(column_headers)} column headers, {len(row_headers)} row headers")
-        print(f"        Cells: {len(spanning_cells)} spanning cells")
-        
-        return enhanced_structure
-    
-    def _extract_table_transformer_structure_for_table(self, results: Dict, table_crop, table_idx: int, original_bbox: List, padded_bbox: List = None) -> Dict:
-        """Extract detailed table structure from Table Transformer results for a single cropped table"""
-        
-        # Table Transformer label mapping
-        id2label = {
-            0: 'table',
-            1: 'table column', 
-            2: 'table row',
-            3: 'table column header',
-            4: 'table projected row header',
-            5: 'table spanning cell'
-        }
-        
-        # Group elements by type
-        elements_by_type = {}
-        for score, label, box in zip(results['scores'], results['labels'], results['boxes']):
-            element_type = id2label.get(label.item(), 'unknown')
-            if element_type not in elements_by_type:
-                elements_by_type[element_type] = []
-            
-            # Convert coordinates back to original image coordinates
-            x1, y1, x2, y2 = box.tolist()
-            
-            # Use padded bbox for coordinate adjustment if available
-            if padded_bbox:
-                pad_x1, pad_y1, pad_x2, pad_y2 = padded_bbox[:4]
-            else:
-                orig_x1, orig_y1, orig_x2, orig_y2 = original_bbox[:4]
-                pad_x1, pad_y1, pad_x2, pad_y2 = orig_x1, orig_y1, orig_x2, orig_y2
-            
-            # Adjust coordinates to original image space using padded bbox
-            adjusted_bbox = [
-                x1 + pad_x1,
-                y1 + pad_y1, 
-                x2 + pad_x1,
-                y2 + pad_y1
-            ]
-            
-            elements_by_type[element_type].append({
-                'score': score.item(),
-                'label': element_type,
-                'bbox': adjusted_bbox,
-                'crop_bbox': box.tolist()
-            })
-        
-        # Extract table structure
-        tables = elements_by_type.get('table', [])
-        table_columns = elements_by_type.get('table column', [])
-        table_rows = elements_by_type.get('table row', [])
-        column_headers = elements_by_type.get('table column header', [])
-        row_headers = elements_by_type.get('table projected row header', [])
-        spanning_cells = elements_by_type.get('table spanning cell', [])
-        
-        # Create enhanced structure for this table
-        table_structure = {
-            'table_index': table_idx,
-            'original_bbox': original_bbox,
-            'crop_size': table_crop.size,
-            'tables': tables,
-            'table_columns': table_columns,
-            'table_rows': table_rows,
-            'column_headers': column_headers,
-            'row_headers': row_headers,
-            'spanning_cells': spanning_cells,
-            'total_tables': len(tables),
-            'total_columns': len(table_columns),
-            'total_rows': len(table_rows),
-            'total_column_headers': len(column_headers),
-            'total_row_headers': len(row_headers),
-            'total_cells': len(spanning_cells),
-            'element_counts': {k: len(v) for k, v in elements_by_type.items()}
-        }
-        
-        return table_structure
     
     def _adjust_tableformer_coordinates(self, tf_output: Dict, original_bbox: List, padded_bbox: List = None) -> Dict:
         """Adjust TableFormer coordinates from cropped space back to original image space"""
@@ -1034,7 +841,7 @@ class LayoutTableDetector:
         }
     
     def _create_visualization(self, input_file: str, output_prefix: str, intermediate_dir: Path, 
-                            layout_result: Dict, table_result: Dict, table_transformer_result: Dict = None) -> Path:
+                            layout_result: Dict, table_result: Dict) -> Path:
         """Create visualization of layout and table detection results"""
         print("  VISUALIZATION Creating layout/table visualization...")
         
@@ -1042,15 +849,12 @@ class LayoutTableDetector:
         stage1_dir = intermediate_dir / "stage1_layout_table"
         layout_viz_dir = stage1_dir / "layout_outputs"
         tableformer_viz_dir = stage1_dir / "tableformer_outputs"
-        table_transformer_viz_dir = stage1_dir / "table_transformer_outputs"
         layout_viz_dir.mkdir(parents=True, exist_ok=True)
         tableformer_viz_dir.mkdir(parents=True, exist_ok=True)
-        table_transformer_viz_dir.mkdir(parents=True, exist_ok=True)
         
         # Create layout visualization
         layout_viz_path = layout_viz_dir / f"{output_prefix}_layout_annotated.png"
         tableformer_viz_path = tableformer_viz_dir / f"{output_prefix}_tableformer_annotated.png"
-        table_transformer_viz_path = table_transformer_viz_dir / f"{output_prefix}_table_transformer_annotated.png"
         
         try:
             # Load original image
@@ -1070,10 +874,13 @@ class LayoutTableDetector:
             layout_canvas.paste(original_img)
             layout_draw = ImageDraw.Draw(layout_canvas)
             
-            # Draw only layout elements
-            layout_elements = layout_result.get("layout_elements", [])
+            # Draw only layout elements (use filtered version for cleaner visualization)
+            layout_elements = layout_result.get("layout_elements_filtered", layout_result.get("layout_elements", []))
             for i, element in enumerate(layout_elements):
                 self._draw_layout_element(layout_draw, element, i, font)
+            
+            # Add legend to layout visualization
+            self._draw_legend(layout_draw, layout_elements, img_width, img_height, font)
             
             # Create tableformer visualization (table cells only)
             tableformer_canvas = Image.new('RGB', (img_width, img_height), 'white')
@@ -1084,19 +891,6 @@ class LayoutTableDetector:
             enhanced_tables = table_result.get("enhanced_table_structure", [])
             for i, table_structure in enumerate(enhanced_tables):
                 self._draw_enhanced_table_structure(tableformer_draw, table_structure, i, small_font)
-            
-            # Create Table Transformer visualization
-            if table_transformer_result:
-                table_transformer_canvas = Image.new('RGB', (img_width, img_height), 'white')
-                table_transformer_canvas.paste(original_img)
-                table_transformer_draw = ImageDraw.Draw(table_transformer_canvas)
-                
-                # Draw Table Transformer structure
-                enhanced_structure = table_transformer_result.get("enhanced_table_structure", {})
-                self._draw_table_transformer_structure(table_transformer_draw, enhanced_structure, small_font)
-                
-                table_transformer_canvas.save(table_transformer_viz_path)
-                print(f"    SUCCESS Table Transformer visualization saved: {table_transformer_viz_path}")
             
             # Save visualizations
             layout_canvas.save(layout_viz_path)
@@ -1114,8 +908,28 @@ class LayoutTableDetector:
             placeholder.save(tableformer_viz_path)
             return layout_viz_path
     
+    def _get_element_color(self, label: str) -> tuple:
+        """Get a distinct color for each element type"""
+        # Enhanced color palette with distinct, vibrant colors
+        color_map = {
+            'section-header': (34, 139, 34),      # Forest Green
+            'table': (220, 20, 60),                # Crimson Red
+            'key-value': (138, 43, 226),           # Blue Violet
+            'list-item': (0, 119, 182),            # Ocean Blue
+            'text': (255, 140, 0),                 # Dark Orange
+            'title': (199, 21, 133),               # Medium Violet Red
+            'caption': (0, 206, 209),              # Dark Turquoise
+            'formula': (255, 69, 0),               # Red Orange
+            'footnote': (184, 134, 11),            # Dark Goldenrod
+            'page-header': (70, 130, 180),         # Steel Blue
+            'page-footer': (72, 61, 139),          # Dark Slate Blue
+            'picture': (218, 112, 214),            # Orchid
+            'unknown': (128, 128, 128)             # Gray
+        }
+        return color_map.get(label.lower(), color_map['unknown'])
+    
     def _draw_layout_element(self, draw: ImageDraw.Draw, element: Dict, index: int, font):
-        """Draw a single layout element"""
+        """Draw a single layout element with improved visibility"""
         # Get bounding box coordinates
         if 'bbox' in element:
             x1, y1, x2, y2 = element['bbox']
@@ -1128,25 +942,118 @@ class LayoutTableDetector:
         x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
         
         label = element.get('label', 'unknown')
+        confidence = element.get('confidence', 0.0)
         
-        # Choose color based on layout type
-        if label.lower() == 'section-header':
-            color = (0, 255, 0)  # Green
-        elif label.lower() == 'table':
-            color = (255, 0, 0)  # Red
-        elif label.lower() == 'key-value':
-            color = (255, 0, 255)  # Magenta
-        elif label.lower() == 'list-item':
-            color = (0, 0, 255)  # Blue
-        else:
-            color = (128, 128, 128)  # Gray
+        # Get color for this element type
+        color = self._get_element_color(label)
         
-        # Draw border
-        draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+        # Draw border with thickness based on confidence
+        border_width = 3 if confidence > 0.9 else 2
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=border_width)
         
-        # Draw label
-        label_text = f"{label} {index+1}"
-        draw.text((x1+2, y1+2), label_text, fill=color, font=font)
+        # Draw label with background for better visibility
+        label_text = f"{label} #{index+1}"
+        conf_text = f"{confidence:.2f}"
+        
+        # Calculate text background size
+        try:
+            bbox = draw.textbbox((x1, y1), label_text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+        except:
+            # Fallback for older PIL versions
+            text_width = len(label_text) * 8
+            text_height = 14
+        
+        # Position label at top of box
+        label_y = max(y1 - text_height - 4, 0)
+        
+        # Draw semi-transparent background for label
+        draw.rectangle(
+            [x1, label_y, x1 + text_width + 8, label_y + text_height + 4],
+            fill=(255, 255, 255, 230)
+        )
+        
+        # Draw label text
+        draw.text((x1 + 4, label_y + 2), label_text, fill=color, font=font)
+        
+        # Draw confidence score in bottom-right corner of element (optional, only if space)
+        if (x2 - x1) > 50 and (y2 - y1) > 20:
+            try:
+                conf_bbox = draw.textbbox((0, 0), conf_text, font=font)
+                conf_width = conf_bbox[2] - conf_bbox[0]
+                conf_height = conf_bbox[3] - conf_bbox[1]
+            except:
+                conf_width = len(conf_text) * 7
+                conf_height = 12
+            
+            conf_x = x2 - conf_width - 6
+            conf_y = y2 - conf_height - 4
+            
+            # Background for confidence
+            draw.rectangle(
+                [conf_x - 2, conf_y - 2, conf_x + conf_width + 2, conf_y + conf_height + 2],
+                fill=(255, 255, 255, 230)
+            )
+            draw.text((conf_x, conf_y), conf_text, fill=color, font=font)
+    
+    def _draw_legend(self, draw: ImageDraw.Draw, elements: List[Dict], img_width: int, img_height: int, font):
+        """Draw a color legend for element types present in the image"""
+        # Find unique element types in this image
+        element_types = {}
+        for elem in elements:
+            label = elem.get('label', 'unknown')
+            if label not in element_types:
+                element_types[label] = self._get_element_color(label)
+        
+        if not element_types:
+            return
+        
+        # Legend configuration
+        legend_padding = 10
+        legend_item_height = 20
+        legend_item_spacing = 5
+        legend_color_box_size = 15
+        legend_width = 200
+        
+        legend_height = (len(element_types) * (legend_item_height + legend_item_spacing)) + (2 * legend_padding)
+        
+        # Position legend in top-right corner
+        legend_x = img_width - legend_width - 20
+        legend_y = 20
+        
+        # Draw legend background with slight transparency
+        draw.rectangle(
+            [legend_x, legend_y, legend_x + legend_width, legend_y + legend_height],
+            fill=(255, 255, 255, 220),
+            outline=(0, 0, 0),
+            width=2
+        )
+        
+        # Draw title
+        draw.text((legend_x + legend_padding, legend_y + 5), "Legend", fill=(0, 0, 0), font=font)
+        
+        # Draw each element type
+        current_y = legend_y + legend_padding + 20
+        for label, color in sorted(element_types.items()):
+            # Draw color box
+            draw.rectangle(
+                [legend_x + legend_padding, current_y, 
+                 legend_x + legend_padding + legend_color_box_size, current_y + legend_color_box_size],
+                fill=color,
+                outline=(0, 0, 0),
+                width=1
+            )
+            
+            # Draw label text
+            draw.text(
+                (legend_x + legend_padding + legend_color_box_size + 5, current_y),
+                label,
+                fill=(0, 0, 0),
+                font=font
+            )
+            
+            current_y += legend_item_height + legend_item_spacing
     
     def _draw_tableformer_result(self, draw: ImageDraw.Draw, tf_result: Dict, index: int, font):
         """Draw TableFormer result (table cells)"""
@@ -1258,84 +1165,6 @@ class LayoutTableDetector:
                 # Draw thicker border for headers
                 draw.rectangle([hx1, hy1, hx2, hy2], outline=rgb_colors['table_projected_row_header'], width=3)
                 draw.text((hx1+5, hy1+5), "ROW_HEADER", fill=rgb_colors['table_projected_row_header'], font=font)
-    
-    def _draw_table_transformer_structure(self, draw: ImageDraw.Draw, enhanced_structure: Dict, font):
-        """Draw Table Transformer structure with exact colors from the notebook"""
-        
-        # Table Transformer colors (exact from notebook)
-        colors = {
-            'table': (0.000, 0.447, 0.741),           # Blue
-            'table_column': (0.850, 0.325, 0.098),    # Red  
-            'table_row': (0.929, 0.694, 0.125),       # Orange
-            'table_column_header': (0.494, 0.184, 0.556),  # Purple
-            'table_projected_row_header': (0.466, 0.674, 0.188),  # Green
-            'table_spanning_cell': (0.301, 0.745, 0.933)  # Light Blue
-        }
-        
-        # Convert colors to RGB (0-255)
-        rgb_colors = {}
-        for key, color in colors.items():
-            rgb_colors[key] = tuple(int(c * 255) for c in color)
-        
-        # Draw tables
-        tables = enhanced_structure.get('tables', [])
-        for i, table in enumerate(tables):
-            bbox = table.get('bbox', [0, 0, 100, 100])
-            score = table.get('score', 0.0)
-            if len(bbox) >= 4:
-                x1, y1, x2, y2 = map(int, bbox[:4])
-                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table'], width=3)
-                draw.text((x1, y1-25), f"Table {i+1}: {score:.2f}", fill=rgb_colors['table'], font=font)
-        
-        # Draw table columns
-        table_columns = enhanced_structure.get('table_columns', [])
-        for i, column in enumerate(table_columns):
-            bbox = column.get('bbox', [0, 0, 100, 100])
-            score = column.get('score', 0.0)
-            if len(bbox) >= 4:
-                x1, y1, x2, y2 = map(int, bbox[:4])
-                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table_column'], width=2)
-                draw.text((x1+5, y1+5), f"Col {i+1}: {score:.2f}", fill=rgb_colors['table_column'], font=font)
-        
-        # Draw table rows
-        table_rows = enhanced_structure.get('table_rows', [])
-        for i, row in enumerate(table_rows):
-            bbox = row.get('bbox', [0, 0, 100, 100])
-            score = row.get('score', 0.0)
-            if len(bbox) >= 4:
-                x1, y1, x2, y2 = map(int, bbox[:4])
-                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table_row'], width=2)
-                draw.text((x1+5, y1+5), f"Row {i+1}: {score:.2f}", fill=rgb_colors['table_row'], font=font)
-        
-        # Draw column headers
-        column_headers = enhanced_structure.get('column_headers', [])
-        for i, header in enumerate(column_headers):
-            bbox = header.get('bbox', [0, 0, 100, 100])
-            score = header.get('score', 0.0)
-            if len(bbox) >= 4:
-                x1, y1, x2, y2 = map(int, bbox[:4])
-                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table_column_header'], width=3)
-                draw.text((x1+5, y1+5), f"Col Header {i+1}: {score:.2f}", fill=rgb_colors['table_column_header'], font=font)
-        
-        # Draw row headers
-        row_headers = enhanced_structure.get('row_headers', [])
-        for i, header in enumerate(row_headers):
-            bbox = header.get('bbox', [0, 0, 100, 100])
-            score = header.get('score', 0.0)
-            if len(bbox) >= 4:
-                x1, y1, x2, y2 = map(int, bbox[:4])
-                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table_projected_row_header'], width=3)
-                draw.text((x1+5, y1+5), f"Row Header {i+1}: {score:.2f}", fill=rgb_colors['table_projected_row_header'], font=font)
-        
-        # Draw spanning cells
-        spanning_cells = enhanced_structure.get('spanning_cells', [])
-        for i, cell in enumerate(spanning_cells):
-            bbox = cell.get('bbox', [0, 0, 100, 100])
-            score = cell.get('score', 0.0)
-            if len(bbox) >= 4:
-                x1, y1, x2, y2 = map(int, bbox[:4])
-                draw.rectangle([x1, y1, x2, y2], outline=rgb_colors['table_spanning_cell'], width=1)
-                draw.text((x1+2, y1+2), f"Cell {i+1}: {score:.2f}", fill=rgb_colors['table_spanning_cell'], font=font)
     
     def _draw_table(self, draw: ImageDraw.Draw, table: Dict, index: int, font):
         """Draw a single table"""

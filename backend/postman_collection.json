@@ -1,0 +1,492 @@
+{
+  "info": {
+    "_postman_id": "d3a7f2f2-1b8a-4f3b-9c2c-collection-reconstruction",
+    "name": "Reconstruction Backend API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Postman collection for the pluggable Reconstruction backend (FastAPI).\n\n**Available Models:**\n- Layout: `docling_layout_v1`\n- OCR: `tesseract_default`\n\n**File Upload Support:**\n- PNG, JPG, PDF files\n- Use `/infer-file` endpoint for direct file uploads with JSON response\n- Use `/infer-file-with-files` endpoint to get both annotated image and JSON as downloadable files (ZIP)\n- Use `/infer-file-json` endpoint for raw JSON data only\n- Use `/infer` endpoint for base64 encoded images\n\n**Response Formats:**\n- `layout.boxes`: Array of detected layout elements with bbox coordinates\n- `ocr.tokens`: Array of OCR text tokens with bbox coordinates\n- `visualization`: Base64 encoded PNG overlay (optional)\n- **File Downloads**: ZIP file containing annotated image + JSON data file"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/health",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "health"
+          ]
+        },
+        "description": "Check if the API server is running and healthy."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Response has status ok', function () { var json = pm.response.json(); pm.expect(json.status).to.eql('ok'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "List Models",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/models",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "models"
+          ]
+        },
+        "description": "Get list of available layout and OCR models."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Contains model arrays', function () { var json = pm.response.json(); pm.expect(json).to.have.property('layout_models'); pm.expect(json).to.have.property('ocr_models'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Infer - Layout only (Base64)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"inputs\": [\n    { \"image_id\": \"page1\", \"image_b64\": \"{{sample_image_b64}}\" }\n  ],\n  \"layout_model\": \"docling_layout_v1\",\n  \"ocr_model\": null,\n  \"params\": { \"layout\": {}, \"ocr\": {} },\n  \"return_visualization\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/infer",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "infer"
+          ]
+        },
+        "description": "Run layout detection on base64 encoded image. Set sample_image_b64 variable to a data URL."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Has results array', function () { var json = pm.response.json(); pm.expect(json.results).to.be.an('array'); });",
+              "pm.test('First result has layout boxes', function () { var json = pm.response.json(); pm.expect(json.results[0].layout).to.have.property('boxes'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Infer - OCR only (Base64)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"inputs\": [\n    { \"image_id\": \"page1\", \"image_b64\": \"{{sample_image_b64}}\" }\n  ],\n  \"layout_model\": null,\n  \"ocr_model\": \"tesseract_default\",\n  \"params\": { \"layout\": {}, \"ocr\": {} },\n  \"return_visualization\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/infer",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "infer"
+          ]
+        },
+        "description": "Run OCR extraction on base64 encoded image. Set sample_image_b64 variable to a data URL."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Has OCR tokens', function () { var json = pm.response.json(); pm.expect(json.results[0].ocr.tokens).to.be.an('array'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Infer File - Layout only",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Upload PNG, JPG, or PDF file"
+            },
+            {
+              "key": "layout_model",
+              "value": "docling_layout_v1",
+              "type": "text",
+              "description": "Layout detection model"
+            },
+            {
+              "key": "ocr_model",
+              "value": "",
+              "type": "text",
+              "description": "Leave empty for layout only"
+            },
+            {
+              "key": "return_visualization",
+              "value": "true",
+              "type": "text",
+              "description": "Return base64 visualization overlay"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/infer-file",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "infer-file"
+          ]
+        },
+        "description": "Upload a file and run layout detection only. Supports PNG, JPG, and PDF files."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Has layout boxes', function () { var json = pm.response.json(); pm.expect(json.layout.boxes).to.be.an('array'); });",
+              "pm.test('OCR tokens are empty', function () { var json = pm.response.json(); pm.expect(json.ocr.tokens).to.be.an('array'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Infer File - OCR only",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Upload PNG, JPG, or PDF file"
+            },
+            {
+              "key": "layout_model",
+              "value": "",
+              "type": "text",
+              "description": "Leave empty for OCR only"
+            },
+            {
+              "key": "ocr_model",
+              "value": "tesseract_default",
+              "type": "text",
+              "description": "OCR extraction model"
+            },
+            {
+              "key": "return_visualization",
+              "value": "true",
+              "type": "text",
+              "description": "Return base64 visualization overlay"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/infer-file",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "infer-file"
+          ]
+        },
+        "description": "Upload a file and run OCR extraction only. Supports PNG, JPG, and PDF files."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Has OCR tokens', function () { var json = pm.response.json(); pm.expect(json.ocr.tokens).to.be.an('array'); });",
+              "pm.test('Layout boxes are empty', function () { var json = pm.response.json(); pm.expect(json.layout.boxes).to.be.an('array'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Infer File - Layout + OCR",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Upload PNG, JPG, or PDF file"
+            },
+            {
+              "key": "layout_model",
+              "value": "docling_layout_v1",
+              "type": "text",
+              "description": "Layout detection model"
+            },
+            {
+              "key": "ocr_model",
+              "value": "tesseract_default",
+              "type": "text",
+              "description": "OCR extraction model"
+            },
+            {
+              "key": "return_visualization",
+              "value": "true",
+              "type": "text",
+              "description": "Return base64 visualization overlay"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/infer-file",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "infer-file"
+          ]
+        },
+        "description": "Upload a file and run both layout detection and OCR extraction. This is the most comprehensive analysis. Supports PNG, JPG, and PDF files."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Has layout boxes and OCR tokens', function () { var json = pm.response.json(); pm.expect(json.layout.boxes).to.be.an('array'); pm.expect(json.ocr.tokens).to.be.an('array'); });",
+              "pm.test('Visualization is present when requested', function () { var json = pm.response.json(); pm.expect(json.visualization).to.be.a('string'); });",
+              "pm.test('Response includes file metadata', function () { var json = pm.response.json(); pm.expect(json).to.have.property('filename'); pm.expect(json).to.have.property('content_type'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Infer - Layout + OCR (Base64)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"inputs\": [\n    { \"image_id\": \"page1\", \"image_b64\": \"{{sample_image_b64}}\" }\n  ],\n  \"layout_model\": \"docling_layout_v1\",\n  \"ocr_model\": \"tesseract_default\",\n  \"params\": { \"layout\": {}, \"ocr\": {} },\n  \"return_visualization\": true\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/infer",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "infer"
+          ]
+        },
+        "description": "Run both layout detection and OCR extraction on base64 encoded image. Set sample_image_b64 variable to a data URL."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Has layout boxes and OCR tokens', function () { var json = pm.response.json(); pm.expect(json.results[0].layout.boxes).to.be.an('array'); pm.expect(json.results[0].ocr.tokens).to.be.an('array'); });",
+              "pm.test('Visualization is present when requested', function () { var json = pm.response.json(); pm.expect(json.results[0].visualization).to.be.a('string'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Infer File with Files - Layout + OCR (ZIP Download)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Upload PNG, JPG, or PDF file"
+            },
+            {
+              "key": "layout_model",
+              "value": "docling_layout_v1",
+              "type": "text",
+              "description": "Layout detection model"
+            },
+            {
+              "key": "ocr_model",
+              "value": "tesseract_default",
+              "type": "text",
+              "description": "OCR extraction model"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/infer-file-with-files",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "infer-file-with-files"
+          ]
+        },
+        "description": "Upload a file and get both annotated image and JSON data as downloadable files in a ZIP archive. This endpoint returns a ZIP file containing:\n- `annotated_[filename]`: Image with visual annotations overlaid\n- `data_[filename].json`: Raw JSON data with layout boxes and OCR tokens\n\nPerfect for getting both the visual result and structured data as separate files."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Response is a ZIP file', function () { pm.expect(pm.response.headers.get('content-type')).to.include('application/zip'); });",
+              "pm.test('Has filename in response', function () { pm.expect(pm.response.headers.get('content-disposition')).to.include('filename='); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Infer File JSON - Raw Data Only",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": [],
+              "description": "Upload PNG, JPG, or PDF file"
+            },
+            {
+              "key": "layout_model",
+              "value": "docling_layout_v1",
+              "type": "text",
+              "description": "Layout detection model"
+            },
+            {
+              "key": "ocr_model",
+              "value": "tesseract_default",
+              "type": "text",
+              "description": "OCR extraction model"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/infer-file-json",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "infer-file-json"
+          ]
+        },
+        "description": "Upload a file and get only the raw JSON data without visualization. Returns structured data with layout boxes, OCR tokens, and metadata. Ideal for programmatic processing where you only need the data, not the visual overlay."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('Has layout and OCR data', function () { var json = pm.response.json(); pm.expect(json).to.have.property('layout'); pm.expect(json).to.have.property('ocr'); });",
+              "pm.test('Has metadata', function () { var json = pm.response.json(); pm.expect(json).to.have.property('metadata'); pm.expect(json.metadata).to.have.property('image_width'); pm.expect(json.metadata).to.have.property('image_height'); });",
+              "pm.test('No visualization field', function () { var json = pm.response.json(); pm.expect(json).to.not.have.property('visualization'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    }
+  ],
+  "event": [],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "sample_image_b64",
+      "value": "data:image/png;base64,"
+    }
+  ]
+}
+
+

@@ -1,0 +1,50 @@
+"""
+Visualization utilities for rendering overlays on images
+"""
+from typing import Dict, Any, List, Optional
+from PIL import Image, ImageDraw, ImageFont
+
+
+def render_overlay(image: Image.Image, layout: Dict[str, Any], ocr: Dict[str, Any]) -> Optional[Image.Image]:
+    """
+    Render overlay visualization on image with layout boxes and OCR tokens
+    
+    Args:
+        image: PIL Image to draw on
+        layout: Dictionary containing layout detection results
+        ocr: Dictionary containing OCR results
+        
+    Returns:
+        PIL Image with overlays, or None if error
+    """
+    try:
+        canvas = image.copy()
+        draw = ImageDraw.Draw(canvas)
+
+        try:
+            font = ImageFont.truetype("arial.ttf", 12)
+        except Exception:
+            font = ImageFont.load_default()
+
+        # Draw layout boxes
+        for i, box in enumerate(layout.get("boxes", [])):
+            bbox = box.get("bbox", [])
+            if len(bbox) < 4:
+                continue
+            x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+            label = box.get("label", "layout")
+            score = box.get("score", 0.0)
+            draw.rectangle([x1, y1, x2, y2], outline=(220, 20, 60), width=2)
+            draw.text((x1 + 2, max(0, y1 - 14)), f"{label} {score:.2f}", fill=(220, 20, 60), font=font)
+
+        # Draw OCR tokens (light boxes)
+        for t in ocr.get("tokens", []):
+            bbox = t.get("bbox", [])
+            if len(bbox) < 4:
+                continue
+            x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+            draw.rectangle([x1, y1, x2, y2], outline=(0, 128, 255), width=1)
+
+        return canvas
+    except Exception:
+        return None
