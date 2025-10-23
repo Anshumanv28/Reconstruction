@@ -2,7 +2,7 @@
 Health Routes - Health check endpoints
 """
 from fastapi import APIRouter
-from controllers.health_controller import HealthController
+from ..controllers.health_controller import HealthController
 
 router = APIRouter(prefix="/health", tags=["health"])
 health_controller = HealthController()

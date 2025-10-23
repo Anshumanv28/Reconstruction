@@ -6,7 +6,7 @@ from PIL import Image
 import base64
 from io import BytesIO
 
-from utils.visualize import render_overlay
+from ..utils.visualize import render_overlay
 
 
 class ImageHelper:

@@ -2,7 +2,7 @@
 Model Service - Handles model registry and management operations
 """
 from typing import Dict, List
-from models.registry import layout_registry, ocr_registry
+from ..models.registry import layout_registry, ocr_registry
 
 
 class ModelService:

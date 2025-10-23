@@ -5,7 +5,7 @@ from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException
 from pydantic import BaseModel
 
-from controllers.inference_controller import InferenceController
+from ..controllers.inference_controller import InferenceController
 
 router = APIRouter(prefix="/infer", tags=["inference"])
 inference_controller = InferenceController()

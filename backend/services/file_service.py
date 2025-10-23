@@ -17,8 +17,20 @@ class FileService:
         """Process uploaded file (PNG, JPG, PDF) and return PIL Image"""
         content = file.file.read()
         
+        # Determine file type from content_type or filename
+        content_type = file.content_type
+        if not content_type and file.filename:
+            # Fallback to filename extension
+            ext = FileService.get_file_extension(file.filename)
+            if ext == '.pdf':
+                content_type = "application/pdf"
+            elif ext in ['.png']:
+                content_type = "image/png"
+            elif ext in ['.jpg', '.jpeg']:
+                content_type = "image/jpeg"
+        
         # Check file type
-        if file.content_type == "application/pdf":
+        if content_type == "application/pdf":
             # Convert PDF to image (first page)
             pdf_doc = fitz.open(stream=content, filetype="pdf")
             page = pdf_doc[0]  # First page
@@ -27,12 +39,12 @@ class FileService:
             pdf_doc.close()
             return Image.open(BytesIO(img_data)).convert("RGB")
         
-        elif file.content_type in ["image/png", "image/jpeg", "image/jpg"]:
+        elif content_type in ["image/png", "image/jpeg", "image/jpg"]:
             # Direct image processing
             return Image.open(BytesIO(content)).convert("RGB")
         
         else:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {file.content_type}")
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {content_type}")
     
     @staticmethod
     def validate_file_type(file: UploadFile) -> bool:

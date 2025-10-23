@@ -8,8 +8,8 @@ import os
 import json
 import zipfile
 
-from models.registry import layout_registry, ocr_registry
-from utils.visualize import render_overlay
+from ..models.registry import layout_registry, ocr_registry
+from ..utils.visualize import render_overlay
 
 
 class InferenceService:

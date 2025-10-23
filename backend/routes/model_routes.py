@@ -2,7 +2,7 @@
 Model Routes - Model-related endpoints
 """
 from fastapi import APIRouter
-from controllers.model_controller import ModelController
+from ..controllers.model_controller import ModelController
 
 router = APIRouter(prefix="/models", tags=["models"])
 model_controller = ModelController()

@@ -2,7 +2,7 @@
 Model Controller - Handles model-related operations
 """
 from typing import Dict, List
-from services.model_service import ModelService
+from ..services.model_service import ModelService
 
 
 class ModelController:

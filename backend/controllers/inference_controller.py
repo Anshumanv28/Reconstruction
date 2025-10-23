@@ -9,9 +9,9 @@ import base64
 from io import BytesIO
 import os
 
-from services.inference_service import InferenceService
-from services.file_service import FileService
-from helpers.image_helper import ImageHelper
+from ..services.inference_service import InferenceService
+from ..services.file_service import FileService
+from ..helpers.image_helper import ImageHelper
 
 
 class InferenceController:
